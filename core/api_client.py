@@ -44,7 +44,7 @@ def _is_login_required(data: object) -> bool:
         return False
     code = data.get("status_code")
     msg = str(data.get("status_msg") or "")
-    return code in _LOGIN_REQUIRED_STATUS_CODES or "请先登录" in msg
+    return code in _LOGIN_REQUIRED_STATUS_CODES or "Please log in first" in msg
 
 
 _USER_AGENT_POOL = [
@@ -590,9 +590,9 @@ class DouyinAPIClient:
     async def get_live_room_info(
         self, room_id: str, *, sec_user_id: str = ""
     ) -> Optional[Dict[str, Any]]:
-        """通过房间号（web_rid）拉取直播间信息。
+        """通过房间号（web_rid）拉取Live stream间信息。
 
-        返回包含 room_info + stream_url 的 dict；若房间不在直播中或接口失败返回 None。
+        返回包含 room_info + stream_url 的 dict；若房间不在Live stream中或接口Failed返回 None。
         """
         params = await self._default_query()
         params.update(
@@ -652,7 +652,7 @@ class DouyinAPIClient:
         word_list = data_root.get("word_list") if isinstance(data_root, dict) else None
         status_code = int(raw.get("status_code") or 0)
         items = word_list if isinstance(word_list, list) else []
-        # 响应为空 + 非正常状态码时显式告警，方便排查 cookie 失效/签名失败
+        # 响应为空 + 非正常状态码时显式告警，方便排查 cookie 失效/签名Failed
         if not items and (status_code or not raw):
             logger.warning(
                 "Hot search board returned no items (status_code=%s). "
@@ -814,10 +814,10 @@ class DouyinAPIClient:
     async def resolve_short_url(
         self, short_url: str, *, timeout_seconds: float = 10.0
     ) -> Optional[str]:
-        """跟随短链 302，返回最终 URL。失败时返回 None。
+        """跟随短链 302，返回最终 URL。Failed时返回 None。
 
         单独设置较短超时（默认 10s），避免被目标站挂死后拖慢整轮下载。
-        HTTP 状态码 ≥ 400 时视为解析失败，返回 None 以避免把错误页 URL
+        HTTP 状态码 ≥ 400 时视为解析Failed，返回 None 以避免把错误页 URL
         继续喂给下游 parser，从而在下游触发更隐晦的 "Unsupported URL" 噪声。
         """
         try:
@@ -883,7 +883,7 @@ class DouyinAPIClient:
                     ids.append(aweme_id)
 
         logger.warning(
-            "API翻页受限，启动浏览器兜底采集（可在弹出页面手动通过验证码/登录）：%s",
+            "API pagination restricted; starting browser fallback (complete captcha/login in popup):%s",
             target_url,
         )
 
@@ -959,11 +959,11 @@ class DouyinAPIClient:
                 if "验证码" in title:
                     if headless:
                         logger.warning(
-                            "检测到验证码页面且当前为 headless 模式，无法人工验证。"
-                            "请将 browser_fallback.headless 设为 false。"
+                            "Captcha page detected in headless mode; manual verification impossible."
+                            "Set browser_fallback.headless to false."
                         )
                         return []
-                    logger.warning("检测到验证码页面，请在浏览器中完成验证，程序会自动继续采集。")
+                    logger.warning("Captcha page detected; complete verification in browser; collection will continue automatically.")
                     await self._wait_for_manual_verification(
                         page, wait_timeout_seconds=wait_timeout_seconds
                     )
@@ -1128,11 +1128,11 @@ class DouyinAPIClient:
             except Exception:
                 pass
             if "验证码" not in title:
-                logger.warning("验证码页面已退出，继续采集。")
+                logger.warning("Captcha page cleared; continuing collection.")
                 return
             await page.wait_for_timeout(1000)
 
-        logger.warning("等待手动验证超时（%ss），继续按当前页面状态采集。", wait_timeout_seconds)
+        logger.warning("Manual verification wait timed out (%ss); continuing with current page state.", wait_timeout_seconds)
 
     def _sync_browser_cookies(self, browser_cookies: List[Dict[str, Any]]) -> None:
         merged: Dict[str, str] = {}

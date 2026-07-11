@@ -12,6 +12,7 @@ from control import QueueManager, RateLimiter, RetryHandler
 from core.api_client import DouyinAPIClient
 from core.metadata import extract_author_sec_uid
 from core.transcript_manager import TranscriptManager
+from core.content_translator import translate_aweme_content
 from storage import Database, FileManager, MetadataHandler
 from utils.logger import setup_logger
 from utils.naming import (
@@ -68,6 +69,7 @@ class BaseDownloader(ABC):
         self.progress_reporter = progress_reporter
         self.metadata_handler = MetadataHandler()
         self.transcript_manager = TranscriptManager(self.config, self.file_manager, self.database)
+        self.channel_id: Optional[int] = None
         self._local_aweme_ids: Optional[set[str]] = None
         self._aweme_id_pattern = re.compile(r"(?<!\d)(\d{15,20})(?!\d)")
         self._local_media_suffixes = {
@@ -440,29 +442,50 @@ class BaseDownloader(ABC):
                 downloaded_files.append(comments_path)
 
         author = aweme_data.get("author", {})
+        tags = self._extract_tags(aweme_data)
+        translation_cfg = self.config.get("translation", {}) or {}
+        translated = await translate_aweme_content(desc, tags, translation_cfg)
+        title_vi = None
+        description_vi = None
+        tags_vi = None
+        if translated:
+            title_vi = translated.get("title_vi")
+            description_vi = translated.get("description_vi")
+            tags_vi = translated.get("tags_vi")
+
         if self.database:
             metadata_json = json.dumps(aweme_data, ensure_ascii=False)
             record = {
                 "aweme_id": aweme_id,
                 "aweme_type": media_type,
+                "channel_id": self.channel_id,
                 "title": desc,
                 "author_id": author.get("uid"),
                 "author_name": author.get("nickname", author_name),
                 "create_time": aweme_data.get("create_time"),
                 "file_path": str(save_dir),
                 "metadata": metadata_json,
-                # Attach sec_uid onto the payload so both the batched path
-                # (add_aweme_batch iterates `record["author_sec_uid"]`) and
-                # the single-write path (add_aweme reads the payload as
-                # fallback when the kwarg is None) pick it up identically.
+                "title_vi": title_vi,
+                "description_vi": description_vi,
+                "tags_vi": tags_vi,
+                "download_status": "success",
                 "author_sec_uid": extract_author_sec_uid(aweme_data),
             }
-            # Caller may opt into batched DB writes by passing a list; we just
-            # accumulate the record and let the caller commit them all at once.
             if db_batch is not None:
                 db_batch.append(record)
             else:
                 await self.database.add_aweme(record)
+
+            translation_cfg = translation_cfg if isinstance(translation_cfg, dict) else {}
+            metadata_translate_ok = translated is not None
+            await self.database.complete_download_handoff(
+                aweme_id=str(aweme_id),
+                channel_id=self.channel_id,
+                downloaded_files=downloaded_files,
+                metadata_translate_ok=metadata_translate_ok,
+                translation_enabled=bool(translation_cfg.get("enabled")),
+                download_status="success",
+            )
 
         manifest_record = {
             "date": publish_date,
@@ -470,10 +493,16 @@ class BaseDownloader(ABC):
             "author_name": author.get("nickname", author_name),
             "desc": desc,
             "media_type": media_type,
-            "tags": self._extract_tags(aweme_data),
+            "tags": tags,
             "file_names": [path.name for path in downloaded_files],
             "file_paths": [self._to_manifest_path(path) for path in downloaded_files],
         }
+        if title_vi:
+            manifest_record["title_vi"] = title_vi
+        if description_vi:
+            manifest_record["description_vi"] = description_vi
+        if tags_vi:
+            manifest_record["tags_vi"] = tags_vi
         if publish_ts:
             manifest_record["publish_timestamp"] = publish_ts
         await self.metadata_handler.append_download_manifest(

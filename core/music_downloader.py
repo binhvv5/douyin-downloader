@@ -29,8 +29,8 @@ class MusicDownloader(BaseDownloader):
             return result
 
         result.total = 1
-        self._progress_set_item_total(1, "单音乐下载")
-        self._progress_update_step("下载音乐", f"music_id={music_id}")
+        self._progress_set_item_total(1, "Single music download")
+        self._progress_update_step("Downloading music", f"music_id={music_id}")
 
         detail = await self._get_music_detail(str(music_id))
         music_url = self._extract_music_url(detail)

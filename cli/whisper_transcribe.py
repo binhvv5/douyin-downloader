@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-whisper_transcribe.py — 对 douyin-downloader 下载的视频进行 Whisper 语音识别
+whisper_transcribe.py — Whisper speech recognition for videos downloaded by douyin-downloader
 
-安装:
+Install:
   pip install openai-whisper rich
-  # ffmpeg: conda install -c conda-forge ffmpeg  或放 ffmpeg.exe 到同目录
+  # ffmpeg: conda install -c conda-forge ffmpeg  or place ffmpeg.exe in the same directory
 
-用法:
-  python whisper_transcribe.py                          # 扫描 ./Downloaded/ 下所有mp4
-  python whisper_transcribe.py -d ./Downloaded/          # 指定目录
-  python whisper_transcribe.py -f video.mp4              # 单个文件
-  python whisper_transcribe.py -d ./Downloaded/ -m medium # 用medium模型
-  python whisper_transcribe.py -d ./Downloaded/ --srt     # 同时输出SRT
-  python whisper_transcribe.py --skip-existing --sc       # 跳过已有 + 繁转简
+Usage:
+  python whisper_transcribe.py                          # scan all mp4 under ./Downloaded/
+  python whisper_transcribe.py -d ./Downloaded/          # specify directory
+  python whisper_transcribe.py -f video.mp4              # single file
+  python whisper_transcribe.py -d ./Downloaded/ -m medium # use medium model
+  python whisper_transcribe.py -d ./Downloaded/ --srt     # also output SRT
+  python whisper_transcribe.py --skip-existing --sc       # skip existing + traditional → simplified
 """
 
 import argparse
@@ -70,7 +70,7 @@ class TranscribeDisplay:
     # ── banner ──
     def show_banner(self):
         banner = Text()
-        banner.append("  🎙  Whisper 视频转录工具\n", style="bold bright_green")
+        banner.append("  🎙  Whisper video transcription tool\n", style="bold bright_green")
         banner.append("  ── Video → Text via OpenAI Whisper ──", style="dim bright_green")
         panel = Panel(banner, border_style="bright_green", expand=False, padding=(0, 2))
         self.console.print(panel)
@@ -95,10 +95,10 @@ class TranscribeDisplay:
         )
         self._progress = self._progress_ctx.__enter__()
         self._overall_id = self._progress.add_task(
-            "[bright_green]总体进度[/]",
+            "[bright_green]Overall progress[/]",
             total=max(total, 1),
             completed=0,
-            detail=f"共 {total} 个视频",
+            detail=f"{total} video(s) total",
         )
 
     def stop_session(self):
@@ -119,8 +119,8 @@ class TranscribeDisplay:
         if not self._progress:
             return
         self._file_id = self._progress.add_task(
-            self._file_desc("提取音频"),
-            total=4,  # 提取音频 → 识别 → 转换 → 保存
+            self._file_desc("Extracting audio"),
+            total=4,  # Extracting audio → 识别 → 转换 → Saving
             completed=0,
             detail=self._shorten(name, 50),
         )
@@ -144,7 +144,7 @@ class TranscribeDisplay:
                     self._file_id,
                     completed=4,
                     description=self._file_desc(
-                        "完成" if status == "success" else "跳过" if status == "skipped" else "失败"
+                        "Done" if status == "success" else "Skipped" if status == "skipped" else "Failed"
                     ),
                     detail=detail,
                 )
@@ -253,7 +253,7 @@ def extract_audio(video_path, audio_path, ffmpeg_path="ffmpeg"):
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        console.print(f"  [{THEME['error']}]ffmpeg错误: {result.stderr.strip()}[/]")
+        console.print(f"  [{THEME['error']}]ffmpeg error: {result.stderr.strip()}[/]")
     return result.returncode == 0 and Path(audio_path).exists()
 
 
@@ -294,8 +294,8 @@ def transcribe_file(
     if output_dir:
         out_dir = Path(output_dir)
     else:
-        # 尝试用原目录，但很多抖音文件夹名含换行/#等字符，写入会失败
-        # 所以先试 mkdir + 写入测试，失败就 fallback
+        # 尝试用原目录，但很多抖音文件夹名含换行/#等字符，写入会Failed
+        # 所以先试 mkdir + 写入测试，Failed就 fallback
         try:
             candidate = video_path.parent
             candidate.mkdir(parents=True, exist_ok=True)
@@ -317,7 +317,7 @@ def transcribe_file(
 
     tmpdir = tempfile.mkdtemp(prefix="whisper_")
     try:
-        # 先把视频复制到临时目录，避免原路径含特殊字符导致 ffmpeg/写入失败
+        # 先把视频复制到临时目录，避免原路径含特殊字符导致 ffmpeg/写入Failed
         tmp_video = os.path.join(tmpdir, "input.mp4")
         try:
             shutil.copy2(str(video_path), tmp_video)
@@ -334,17 +334,17 @@ def transcribe_file(
                 else:
                     raise
             except Exception:
-                console.print(f"  [{THEME['error']}]无法访问视频文件: {e}[/]")
-                display.advance_file("失败", "路径不可达")
+                console.print(f"  [{THEME['error']}]Cannot access video file: {e}[/]")
+                display.advance_file("Failed", "Path unreachable")
                 return False
 
-        # Step 1: 提取音频
+        # Step 1: Extracting audio
         audio_path = os.path.join(tmpdir, "audio.wav")
         if not extract_audio(tmp_video, audio_path, ffmpeg_path):
-            display.advance_file("失败", "音频提取失败")
+            display.advance_file("Failed", "Audio extraction failed")
             return False
         audio_mb = os.path.getsize(audio_path) / 1024 / 1024
-        display.advance_file("识别中", f"音频 {audio_mb:.1f}MB")
+        display.advance_file("Recognizing", f"Audio {audio_mb:.1f}MB")
 
         # Step 2: Whisper 识别
         result = model.transcribe(audio_path, language=language, verbose=False)
@@ -352,7 +352,7 @@ def transcribe_file(
         detected_lang = result.get("language", language)
 
         if not segments:
-            display.advance_file("无内容", "未检测到语音")
+            display.advance_file("No content", "No speech detected")
             return False
 
         # Step 3: 繁转简
@@ -360,8 +360,8 @@ def transcribe_file(
             return converter.convert(text) if converter and text else text
 
         text_lines = [_cv(seg["text"].strip()) for seg in segments if seg.get("text", "").strip()]
-        tag = "→简" if converter else ""
-        display.advance_file("保存", f"{len(segments)}段 lang={detected_lang} {tag}")
+        tag = "→Simplified" if converter else ""
+        display.advance_file("Saving", f"{len(segments)} segment(s) lang={detected_lang} {tag}")
 
         # Step 4: 写文件
         saved = []
@@ -379,7 +379,7 @@ def transcribe_file(
             srt_path.write_text("\n".join(srt_lines), encoding="utf-8")
             saved.append(srt_path.name)
 
-        display.advance_file("完成", " + ".join(saved))
+        display.advance_file("Done", " + ".join(saved))
         return True
 
     finally:
@@ -389,7 +389,7 @@ def transcribe_file(
 def find_videos(directory, skip_existing=False, output_dir=None):
     directory = Path(directory)
     if not directory.exists():
-        display.error(f"目录不存在: {directory}")
+        display.error(f"Directory does not exist: {directory}")
         return []
 
     videos = sorted(directory.rglob("*.mp4"))
@@ -404,7 +404,7 @@ def find_videos(directory, skip_existing=False, output_dir=None):
             dirs_to_check.append(Path("./transcripts"))
             found = any((d / f"{safe}.transcript.txt").exists() for d in dirs_to_check)
             if found:
-                display.info(f"跳过 {safe[:50]}... (已有transcript)")
+                display.info(f"Skipped {safe[:50]}... (transcript already exists)")
             else:
                 filtered.append(v)
         videos = filtered
@@ -417,33 +417,33 @@ def find_videos(directory, skip_existing=False, output_dir=None):
 # ============================================================
 def main():
     parser = argparse.ArgumentParser(
-        description="Whisper 视频转录工具 — 批量语音识别",
+        description="Whisper video transcription tool — batch speech recognition",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "示例:\n"
+            "Examples:\n"
             "  python whisper_transcribe.py -d ./Downloaded/\n"
             "  python whisper_transcribe.py -f video.mp4 -m medium\n"
             "  python whisper_transcribe.py -d ./Downloaded/ --srt --sc --skip-existing"
         ),
     )
-    parser.add_argument("-d", "--dir", default="./Downloaded", help="视频目录 (默认 ./Downloaded/)")
-    parser.add_argument("-f", "--file", help="单个视频文件")
+    parser.add_argument("-d", "--dir", default="./Downloaded", help="Video directory (default ./Downloaded/)")
+    parser.add_argument("-f", "--file", help="Single video file")
     parser.add_argument(
         "-m",
         "--model",
         default="base",
         choices=["tiny", "base", "small", "medium", "large"],
-        help="Whisper模型 (默认 base)",
+        help="Whisper model (default base)",
     )
-    parser.add_argument("-l", "--language", default="zh", help="语言 (默认 zh)")
-    parser.add_argument("--srt", action="store_true", help="同时输出SRT字幕")
-    parser.add_argument("--skip-existing", action="store_true", help="跳过已有transcript的视频")
-    parser.add_argument("--sc", action="store_true", help="繁体转简体 (需 pip install OpenCC)")
+    parser.add_argument("-l", "--language", default="zh", help="Language (default zh)")
+    parser.add_argument("--srt", action="store_true", help="Also output SRT subtitles")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip videos that already have transcripts")
+    parser.add_argument("--sc", action="store_true", help="Traditional → simplified (requires pip install OpenCC)")
     parser.add_argument(
         "-o",
         "--output",
         default=None,
-        help="转录文件输出目录 (默认与视频同目录, 路径异常时自动fallback到 ./transcripts)",
+        help="Transcript output directory (default: same as video; fallback to ./transcripts on path issues)",
     )
 
     args = parser.parse_args()
@@ -452,11 +452,11 @@ def main():
     display.show_banner()
 
     # ── 依赖检查 ──
-    console.print(f"  [{THEME['dim']}]检查依赖...[/]")
+    console.print(f"  [{THEME['dim']}]Checking dependencies…[/]")
 
     ffmpeg_path = find_ffmpeg()
     if not ffmpeg_path:
-        display.dep_fail("ffmpeg", "conda install -c conda-forge ffmpeg  或放 ffmpeg.exe 到同目录")
+        display.dep_fail("ffmpeg", "conda install -c conda-forge ffmpeg  or place ffmpeg.exe in the same directory")
         sys.exit(1)
     display.dep_ok("ffmpeg", ffmpeg_path)
 
@@ -465,7 +465,7 @@ def main():
     except ImportError:
         display.dep_fail("openai-whisper", "pip install openai-whisper")
         sys.exit(1)
-    display.dep_ok("whisper", "已安装")
+    display.dep_ok("whisper", "Installed")
 
     converter = None
     if args.sc:
@@ -473,7 +473,7 @@ def main():
             from opencc import OpenCC
 
             converter = OpenCC("t2s")
-            display.dep_ok("OpenCC", "繁体→简体")
+            display.dep_ok("OpenCC", "Traditional → simplified")
         except ImportError:
             display.dep_fail("OpenCC", "pip install OpenCC")
             sys.exit(1)
@@ -484,21 +484,21 @@ def main():
     if args.file:
         videos = [Path(args.file)]
         if not videos[0].exists():
-            display.error(f"文件不存在: {args.file}")
+            display.error(f"File does not exist: {args.file}")
             sys.exit(1)
     else:
         videos = find_videos(args.dir, skip_existing=args.skip_existing, output_dir=args.output)
 
     if not videos:
-        display.warning("没有找到需要处理的视频文件")
+        display.warning("No video files found to process")
         return
 
-    display.info(f"找到 {len(videos)} 个视频")
+    display.info(f"Found {len(videos)} video(s)")
 
     # ── 加载模型 ──
-    display.info(f"加载 Whisper 模型: [{THEME['model']}]{args.model}[/]  (首次需下载)")
+    display.info(f"Loading Whisper model: [{THEME['model']}]{args.model}[/]  (first run downloads model)")
     model = whisper.load_model(args.model)
-    display.success(f"模型 [{THEME['model']}]{args.model}[/] 加载完成")
+    display.success(f"Model [{THEME['model']}]{args.model}[/] loaded")
     console.print()
 
     # ── 输出格式 ──
@@ -516,19 +516,19 @@ def main():
                     video, model, ffmpeg_path, output_formats, args.language, converter, args.output
                 )
                 display.complete_file(
-                    "success" if ok else "failed", video.name if ok else "识别失败"
+                    "success" if ok else "failed", video.name if ok else "Recognition failed"
                 )
             except KeyboardInterrupt:
-                display.complete_file("failed", "用户中断")
+                display.complete_file("failed", "Interrupted by user")
                 raise
             except Exception as e:
                 display.complete_file("failed", str(e)[:60])
-                console.print(f"  [{THEME['error']}]错误详情: {e}[/]")
+                console.print(f"  [{THEME['error']}]Error details: {e}[/]")
                 import traceback
 
                 console.print(f"[{THEME['dim']}]{traceback.format_exc()}[/]")
     except KeyboardInterrupt:
-        display.warning("用户中断")
+        display.warning("Interrupted by user")
     finally:
         display.stop_session()
 

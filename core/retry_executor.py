@@ -171,7 +171,7 @@ async def retry_failed_awemes(
                 # advance_item later hooks into the same running total.
                 try:
                     reporter.set_item_total(
-                        len(aweme_ids), detail=f"重试 {len(aweme_ids)} 个失败作品"
+                        len(aweme_ids), detail=f"Retrying {len(aweme_ids)} failed item(s)"
                     )
                 except Exception:
                     pass
@@ -195,7 +195,7 @@ async def retry_failed_awemes(
                         try:
                             reporter.on_log(
                                 level="warning",
-                                message="跳过 · aweme_id 为空",
+                                message="Skipped · aweme_id is empty",
                             )
                         except Exception:
                             pass
@@ -211,7 +211,7 @@ async def retry_failed_awemes(
                         try:
                             reporter.on_log(
                                 level="error",
-                                message=f"获取作品详情失败 · {aid_str}",
+                                message=f"Failed to fetch item details · {aid_str}",
                             )
                             reporter.advance_item("failed", detail=aid_str)
                         except Exception:

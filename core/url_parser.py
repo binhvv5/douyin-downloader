@@ -97,7 +97,7 @@ class URLParser:
 
     @staticmethod
     def _extract_room_id(url: str) -> Optional[str]:
-        # 直播链接形态：
+        # Live stream链接形态：
         #   https://live.douyin.com/123456789
         #   https://www.douyin.com/follow/live/123456789
         match = re.search(r"/live/(\d+)", url)

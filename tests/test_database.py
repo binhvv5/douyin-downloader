@@ -232,19 +232,33 @@ async def test_database_get_conn_reuses_single_connection_under_concurrency(tmp_
     connect_calls = []
 
     class _FakeConn:
-        def __init__(self, db_path: str):
-            self.db_path = db_path
-            self.closed = False
+        async def execute(self, sql, params=()):
+            class _Cursor:
+                rowcount = 0
+
+                async def fetchone(self):
+                    return None
+
+                async def fetchall(self):
+                    return []
+
+            return _Cursor()
+
+        async def executemany(self, sql, params_seq):
+            return None
+
+        async def commit(self):
+            return None
 
         async def close(self):
             self.closed = True
 
-    async def _fake_connect(db_path: str):
+    async def _fake_open_sqlite(db_path: str):
         connect_calls.append(db_path)
         await asyncio.sleep(0)
-        return _FakeConn(db_path)
+        return _FakeConn()
 
-    monkeypatch.setattr(database_module.aiosqlite, "connect", _fake_connect)
+    monkeypatch.setattr(database_module, "open_sqlite", _fake_open_sqlite)
 
     database = Database(str(tmp_path / "test.db"))
     conn_a, conn_b = await asyncio.gather(database._get_conn(), database._get_conn())

@@ -57,7 +57,7 @@ def test_single_url_overall_progress_follows_item_count(monkeypatch):
     assert fake_progress.tasks[overall_task_id]["total"] == 1
 
     display.start_url(1, 1, "https://example.com/u")
-    display.set_item_total(5, "作品待下载")
+    display.set_item_total(5, "Items pending download")
     assert fake_progress.tasks[overall_task_id]["total"] == 5
     assert fake_progress.tasks[overall_task_id]["completed"] == 0
 
@@ -81,7 +81,7 @@ def test_multi_url_overall_progress_stays_url_based(monkeypatch):
     assert fake_progress.tasks[overall_task_id]["total"] == 2
 
     display.start_url(1, 2, "https://example.com/u1")
-    display.set_item_total(8, "作品待下载")
+    display.set_item_total(8, "Items pending download")
     display.advance_item("success", "a1")
     assert fake_progress.tasks[overall_task_id]["completed"] == 0
 

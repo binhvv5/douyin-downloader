@@ -46,7 +46,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "rate_limit": 2,
     "proxy": "",
     "database": True,
+    "database_engine": "sqlite",
     "database_path": "dy_downloader.db",
+    "database_mysql": {
+        "host": "127.0.0.1",
+        "port": 3306,
+        "user": "douyin",
+        "password": "",
+        "database": "douyin_downloader",
+    },
     "progress": {
         "quiet_logs": True,
     },
@@ -71,6 +79,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         # deliberately does not surface this toggle — see
         # ``.kiro/specs/transcript-audio-extract-and-ui`` Requirement 1.
         "upload_audio_only": True,
+    },
+    "translation": {
+        "enabled": False,
+        "model": "gpt-4o-mini",
+        "api_url": "https://api.openai.com/v1/chat/completions",
+        "api_key_env": "OPENAI_API_KEY",
+        "api_key": "",
     },
     "auto_cookie": False,
     "browser_fallback": {
@@ -104,5 +119,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "server": {
         "max_jobs": 500,  # 内存中保留的 job 条数上限（不含 in-flight）
         "job_ttl_seconds": 86400,  # 完成态 job 保留时间（秒）
+    },
+    "scheduler": {
+        "interval_seconds": 600,
+        "lock_timeout_seconds": 0,
+        "run_once": False,
     },
 }

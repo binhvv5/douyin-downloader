@@ -23,6 +23,9 @@ pip-wheel-metadata/
 venv/
 env/
 
+# Playwright browser binaries (install via: playwright install chromium)
+.playwright-browsers/
+
 # OS files
 .DS_Store
 

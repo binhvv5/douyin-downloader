@@ -93,8 +93,8 @@ async def test_video_downloader_reports_item_progress(tmp_path, monkeypatch):
 
     assert result.total == 1
     assert result.success == 1
-    assert reporter.item_totals == [(1, "单作品下载")]
-    assert ("下载作品", "单作品资源下载中") in reporter.step_updates
+    assert reporter.item_totals == [(1, "Single-item download")]
+    assert ("Downloading items", "Downloading single-item resources") in reporter.step_updates
     assert reporter.item_events == [("success", "123")]
 
     await api_client.close()

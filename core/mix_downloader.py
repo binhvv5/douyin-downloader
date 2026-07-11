@@ -21,8 +21,8 @@ class MixDownloader(BaseDownloader):
         aweme_list = await self._collect_mix_aweme_list(str(mix_id))
 
         result.total = len(aweme_list)
-        self._progress_set_item_total(result.total, "合集作品待下载")
-        self._progress_update_step("下载合集", f"mix_id={mix_id}，待处理 {result.total} 条")
+        self._progress_set_item_total(result.total, "Mix items pending download")
+        self._progress_update_step("Downloading mix", f"mix_id={mix_id}，{result.total} item(s) pending")
 
         mix_detail = await self._get_mix_detail(str(mix_id))
         author_name = (

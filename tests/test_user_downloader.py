@@ -316,8 +316,8 @@ def test_user_post_reports_step_and_item_progress(tmp_path, monkeypatch):
     assert result.success == 1
     assert result.skipped == 1
     assert result.failed == 1
-    assert reporter.item_totals == [(3, "作品待下载")]
-    assert ("下载作品", "待处理 3 条") in reporter.step_updates
+    assert reporter.item_totals == [(3, "Items pending download")]
+    assert ("Downloading items", "3 item(s) pending") in reporter.step_updates
     statuses = [status for status, _detail in reporter.item_events]
     assert statuses.count("success") == 1
     assert statuses.count("skipped") == 1

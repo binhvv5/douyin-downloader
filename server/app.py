@@ -76,7 +76,7 @@ class _ServerDeps:
 
 
 async def _execute_download(url: str, deps: "_ServerDeps") -> Dict[str, int]:
-    """简化版 download_url：只负责执行并返回成功/失败计数。
+    """简化版 download_url：只负责执行并返回Success/Failed计数。
 
     有意不复用 cli.main.download_url —— 后者绑定了 progress_display 的 rich 状态。
     API client 仍按请求创建（aiohttp session 不跨请求复用）；其余重量级依赖从

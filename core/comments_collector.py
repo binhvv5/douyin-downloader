@@ -2,7 +2,7 @@
 
 设计要点：
 - 复用 DouyinAPIClient 的分页请求与签名
-- 与下载流程解耦：作为独立的 helper，由 BaseDownloader 在保存媒体后按需调用
+- 与下载流程解耦：作为独立的 helper，由 BaseDownloader 在Saving媒体后按需调用
 - 输出位置：与媒体同目录，文件名 `{file_stem}_comments.json`
 - 支持上限 max_comments（默认 0 = 不限）和 include_replies
 """
@@ -41,7 +41,7 @@ class CommentsCollector:
         self.retry_delay_seconds = float(retry_delay_seconds or 1.0)
 
     async def collect_and_save(self, aweme_id: str, output_path: Path) -> Optional[Dict[str, Any]]:
-        """抓取评论并写入 output_path，失败时返回 None。"""
+        """抓取评论并写入 output_path，Failed时返回 None。"""
         comments = await self.collect(aweme_id)
         if comments is None:
             return None
@@ -60,7 +60,7 @@ class CommentsCollector:
         return payload
 
     async def collect(self, aweme_id: str) -> Optional[List[Dict[str, Any]]]:
-        """抓取评论列表（不写盘），失败返回 None。"""
+        """抓取评论列表（不写盘），Failed返回 None。"""
         all_comments: List[Dict[str, Any]] = []
         cursor = 0
         seen_ids: set = set()

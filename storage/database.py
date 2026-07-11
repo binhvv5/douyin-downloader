@@ -1,28 +1,57 @@
 import asyncio
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Union
 
-import aiosqlite
+from storage.db_connection import DbConnection, open_mysql, open_sqlite
+from storage.pipeline_handoff import build_asset_entries, find_local_source_mp4
+
+
+def create_database(config: Dict[str, Any]) -> "Database":
+    engine = str(config.get("database_engine") or "sqlite").strip().lower()
+    if engine == "mysql":
+        mysql_cfg = config.get("database_mysql") or {}
+        return Database(engine="mysql", mysql=mysql_cfg)
+    db_path = config.get("database_path") or "dy_downloader.db"
+    return Database(engine="sqlite", db_path=str(db_path))
 
 
 class Database:
-    def __init__(self, db_path: str = "dy_downloader.db"):
+    def __init__(
+        self,
+        db_path: str = "dy_downloader.db",
+        *,
+        engine: str = "sqlite",
+        mysql: Optional[Dict[str, Any]] = None,
+    ):
+        self.engine = str(engine or "sqlite").strip().lower()
         self.db_path = db_path
+        self.mysql_config = dict(mysql or {})
         self._initialized = False
-        self._conn: Optional[aiosqlite.Connection] = None
-        # 延迟到首次 _get_conn 调用时在当前 event loop 上创建 Lock，
-        # 避免在 __init__ 阶段抢到错误的 loop。
+        self._conn: Optional[DbConnection] = None
         self._conn_lock: Optional[asyncio.Lock] = None
 
-    async def _get_conn(self) -> aiosqlite.Connection:
+    def _placeholder(self, count: int = 1) -> str:
+        token = "%s" if self.engine == "mysql" else "?"
+        if count <= 1:
+            return token
+        return ", ".join([token] * count)
+
+    def _in_clause(self, count: int) -> str:
+        return ", ".join([self._placeholder()] * count)
+
+    async def _get_conn(self) -> DbConnection:
         if self._conn is not None:
             return self._conn
         if self._conn_lock is None:
             self._conn_lock = asyncio.Lock()
         async with self._conn_lock:
             if self._conn is None:
-                self._conn = await aiosqlite.connect(self.db_path)
+                if self.engine == "mysql":
+                    self._conn = await open_mysql(self.mysql_config)
+                else:
+                    self._conn = await open_sqlite(self.db_path)
         return self._conn
 
     async def initialize(self):
@@ -31,12 +60,19 @@ class Database:
 
         db = await self._get_conn()
 
-        # WAL gives concurrent reader/writer; NORMAL avoids fsync on every commit
-        # (loses at most last few txns on power loss — acceptable for download history).
+        if self.engine == "mysql":
+            await self._initialize_mysql(db)
+        else:
+            await self._initialize_sqlite(db)
+
+        self._initialized = True
+
+    async def _initialize_sqlite(self, db: DbConnection):
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")
 
-        await db.execute("""
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS aweme (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 aweme_id TEXT UNIQUE NOT NULL,
@@ -49,9 +85,11 @@ class Database:
                 file_path TEXT,
                 metadata TEXT
             )
-        """)
+        """
+        )
 
-        await db.execute("""
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS download_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT NOT NULL,
@@ -61,9 +99,11 @@ class Database:
                 success_count INTEGER,
                 config TEXT
             )
-        """)
+        """
+        )
 
-        await db.execute("""
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS transcript_job (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 aweme_id TEXT NOT NULL,
@@ -79,13 +119,11 @@ class Database:
                 updated_at INTEGER,
                 UNIQUE(aweme_id, video_path, model)
             )
-        """)
+        """
+        )
 
-        # `job` persists the task-center JobManager records so they survive
-        # a sidecar restart. Only terminal jobs (success / failed / cancelled)
-        # are ever written here — see server/jobs.py. `last_retry_summary`
-        # and `overrides` are stored as JSON text.
-        await db.execute("""
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS job (
                 job_id              TEXT PRIMARY KEY,
                 url                 TEXT NOT NULL,
@@ -106,7 +144,8 @@ class Database:
                 retry_history       TEXT,
                 overrides           TEXT
             )
-        """)
+        """
+        )
 
         await db.execute("CREATE INDEX IF NOT EXISTS idx_aweme_id ON aweme(aweme_id)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_author_id ON aweme(author_id)")
@@ -120,29 +159,491 @@ class Database:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_job_created_at ON job(created_at)")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_job_status ON job(status)")
 
-        # Incremental migration: add author_sec_uid column to legacy aweme tables.
-        # Running initialize() twice must be a no-op.
         cursor = await db.execute("PRAGMA table_info(aweme)")
         existing_columns = {row[1] for row in await cursor.fetchall()}
         if "author_sec_uid" not in existing_columns:
             await db.execute("ALTER TABLE aweme ADD COLUMN author_sec_uid TEXT")
 
-        # Incremental migration: add retry_history column to legacy job
-        # tables so pre-existing DB files (created before retry-history
-        # persistence landed) continue to work. NULL for old rows; the
-        # restore path maps NULL -> [] so the renderer gracefully shows
-        # no history for those jobs.
         cursor = await db.execute("PRAGMA table_info(job)")
         existing_job_columns = {row[1] for row in await cursor.fetchall()}
         if "retry_history" not in existing_job_columns:
             await db.execute("ALTER TABLE job ADD COLUMN retry_history TEXT")
 
+        await self._ensure_aweme_translation_columns(db, engine="sqlite")
+        await self._ensure_aweme_pipeline_columns(db, engine="sqlite")
+        await self._initialize_pipeline_tables(db, engine="sqlite")
+
         await db.commit()
-        self._initialized = True
+
+    async def _initialize_mysql(self, db: DbConnection):
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS aweme (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                aweme_id VARCHAR(64) NOT NULL,
+                aweme_type VARCHAR(32) NOT NULL,
+                title TEXT,
+                author_id VARCHAR(64),
+                author_name VARCHAR(255),
+                author_sec_uid VARCHAR(128),
+                create_time BIGINT,
+                download_time BIGINT,
+                file_path TEXT,
+                metadata LONGTEXT,
+                UNIQUE KEY uq_aweme_id (aweme_id),
+                KEY idx_author_id (author_id),
+                KEY idx_download_time (download_time)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+        )
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS download_history (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                url TEXT NOT NULL,
+                url_type VARCHAR(32) NOT NULL,
+                download_time BIGINT,
+                total_count INT,
+                success_count INT,
+                config LONGTEXT
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+        )
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS transcript_job (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                aweme_id VARCHAR(64) NOT NULL,
+                video_path TEXT NOT NULL,
+                transcript_dir TEXT,
+                text_path TEXT,
+                json_path TEXT,
+                model VARCHAR(128) NOT NULL,
+                status VARCHAR(32) NOT NULL,
+                skip_reason TEXT,
+                error_message TEXT,
+                created_at BIGINT,
+                updated_at BIGINT,
+                UNIQUE KEY uq_transcript_job (aweme_id, video_path(255), model),
+                KEY idx_transcript_aweme_id (aweme_id),
+                KEY idx_transcript_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+        )
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS job (
+                job_id              VARCHAR(64) PRIMARY KEY,
+                url                 TEXT NOT NULL,
+                status              VARCHAR(32) NOT NULL,
+                created_at          VARCHAR(64) NOT NULL,
+                started_at          VARCHAR(64),
+                finished_at         VARCHAR(64),
+                total               INT NOT NULL DEFAULT 0,
+                success             INT NOT NULL DEFAULT 0,
+                failed              INT NOT NULL DEFAULT 0,
+                skipped             INT NOT NULL DEFAULT 0,
+                error               TEXT,
+                author_nickname     VARCHAR(255),
+                author_sec_uid      VARCHAR(128),
+                retry_count         INT NOT NULL DEFAULT 0,
+                last_retry_at       VARCHAR(64),
+                last_retry_summary  LONGTEXT,
+                retry_history       LONGTEXT,
+                overrides           LONGTEXT,
+                KEY idx_job_created_at (created_at),
+                KEY idx_job_status (status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """
+        )
+
+        db_name = str(self.mysql_config.get("database") or "douyin_downloader")
+        cursor = await db.execute(
+            """
+            SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'aweme' AND COLUMN_NAME = 'author_sec_uid'
+            """,
+            (db_name,),
+        )
+        if not await cursor.fetchone():
+            await db.execute("ALTER TABLE aweme ADD COLUMN author_sec_uid VARCHAR(128)")
+
+        cursor = await db.execute(
+            """
+            SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'job' AND COLUMN_NAME = 'retry_history'
+            """,
+            (db_name,),
+        )
+        if not await cursor.fetchone():
+            await db.execute("ALTER TABLE job ADD COLUMN retry_history LONGTEXT")
+
+        await self._ensure_aweme_translation_columns(db, engine="mysql")
+        await self._ensure_aweme_pipeline_columns(db, engine="mysql")
+        await self._initialize_pipeline_tables(db, engine="mysql")
+
+        await db.commit()
+
+    async def _ensure_aweme_translation_columns(self, db: DbConnection, *, engine: str) -> None:
+        columns = {
+            "title_vi": "TEXT",
+            "description_vi": "TEXT",
+            "tags_vi": "TEXT",
+        }
+        if engine == "mysql":
+            db_name = str(self.mysql_config.get("database") or "douyin_downloader")
+            for column, col_type in columns.items():
+                cursor = await db.execute(
+                    """
+                    SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'aweme' AND COLUMN_NAME = %s
+                    """,
+                    (db_name, column),
+                )
+                if not await cursor.fetchone():
+                    await db.execute(f"ALTER TABLE aweme ADD COLUMN {column} {col_type}")
+            return
+
+        cursor = await db.execute("PRAGMA table_info(aweme)")
+        existing_columns = {row[1] for row in await cursor.fetchall()}
+        for column, col_type in columns.items():
+            if column not in existing_columns:
+                await db.execute(f"ALTER TABLE aweme ADD COLUMN {column} {col_type}")
+
+    async def _ensure_aweme_pipeline_columns(self, db: DbConnection, *, engine: str) -> None:
+        if engine == "mysql":
+            columns = {
+                "channel_id": "INT NULL",
+                "download_status": "VARCHAR(32) NOT NULL DEFAULT 'success'",
+                "created_at": "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+                "updated_at": "DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP",
+            }
+            db_name = str(self.mysql_config.get("database") or "douyin_downloader")
+            for column, col_type in columns.items():
+                cursor = await db.execute(
+                    """
+                    SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'aweme' AND COLUMN_NAME = %s
+                    """,
+                    (db_name, column),
+                )
+                if not await cursor.fetchone():
+                    await db.execute(f"ALTER TABLE aweme ADD COLUMN {column} {col_type}")
+            return
+
+        columns = {
+            "channel_id": "INTEGER",
+            "download_status": "TEXT NOT NULL DEFAULT 'success'",
+            "created_at": "TEXT",
+            "updated_at": "TEXT",
+        }
+        cursor = await db.execute("PRAGMA table_info(aweme)")
+        existing_columns = {row[1] for row in await cursor.fetchall()}
+        for column, col_type in columns.items():
+            if column not in existing_columns:
+                await db.execute(f"ALTER TABLE aweme ADD COLUMN {column} {col_type}")
+
+    async def _initialize_pipeline_tables(self, db: DbConnection, *, engine: str) -> None:
+        if engine == "mysql":
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS channels (
+                    id              INT AUTO_INCREMENT PRIMARY KEY,
+                    name            VARCHAR(255) NOT NULL,
+                    douyin_url      TEXT NOT NULL,
+                    sec_uid         VARCHAR(128) NULL,
+                    enabled         TINYINT(1) NOT NULL DEFAULT 1,
+                    sync_mode       ENUM('full', 'incremental') NOT NULL DEFAULT 'incremental',
+                    last_sync_at    DATETIME NULL,
+                    notes           TEXT NULL,
+                    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_channels_sec_uid (sec_uid),
+                    KEY idx_channels_enabled (enabled)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS video_assets (
+                    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    aweme_id        VARCHAR(64) NOT NULL,
+                    asset_type      ENUM(
+                        'source_mp4', 'cover', 'music', 'metadata_json',
+                        'transcript_zh', 'transcript_vi', 'dubbed_mp4', 'subtitle_vi'
+                    ) NOT NULL,
+                    file_path       TEXT NOT NULL,
+                    file_size       BIGINT NULL,
+                    checksum        VARCHAR(64) NULL,
+                    mime_type       VARCHAR(128) NULL,
+                    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_video_assets_aweme_type (aweme_id, asset_type),
+                    KEY idx_video_assets_aweme_id (aweme_id),
+                    KEY idx_video_assets_type (asset_type)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS pipeline_jobs (
+                    id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    aweme_id        VARCHAR(64) NOT NULL,
+                    channel_id      INT NULL,
+                    stage           ENUM(
+                        'download', 'metadata_translate', 'dub',
+                        'upload_facebook', 'upload_youtube'
+                    ) NOT NULL,
+                    status          ENUM(
+                        'pending', 'processing', 'success', 'failed', 'skipped'
+                    ) NOT NULL DEFAULT 'pending',
+                    priority        INT NOT NULL DEFAULT 0,
+                    attempt_count   INT NOT NULL DEFAULT 0,
+                    max_attempts    INT NOT NULL DEFAULT 3,
+                    locked_by       VARCHAR(64) NULL,
+                    locked_at       DATETIME NULL,
+                    started_at      DATETIME NULL,
+                    finished_at     DATETIME NULL,
+                    error_message   TEXT NULL,
+                    result_json     JSON NULL,
+                    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_pipeline_jobs_aweme_stage (aweme_id, stage),
+                    KEY idx_pipeline_claim (stage, status, priority, created_at),
+                    KEY idx_pipeline_aweme_id (aweme_id),
+                    KEY idx_pipeline_channel_id (channel_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS upload_accounts (
+                    id                  INT AUTO_INCREMENT PRIMARY KEY,
+                    platform            ENUM('facebook', 'youtube') NOT NULL,
+                    account_name        VARCHAR(255) NOT NULL,
+                    page_id             VARCHAR(128) NULL,
+                    youtube_channel_id  VARCHAR(128) NULL,
+                    access_token        TEXT NULL,
+                    refresh_token       TEXT NULL,
+                    token_expires_at    DATETIME NULL,
+                    app_id              VARCHAR(128) NULL,
+                    app_secret          VARCHAR(512) NULL,
+                    client_id           VARCHAR(256) NULL,
+                    client_secret       VARCHAR(512) NULL,
+                    api_key             TEXT NULL,
+                    enabled             TINYINT(1) NOT NULL DEFAULT 1,
+                    daily_quota         INT NULL,
+                    notes               TEXT NULL,
+                    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_upload_accounts_platform_name (platform, account_name),
+                    KEY idx_upload_accounts_enabled (enabled)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+            )
+            await db.execute(
+                """
+                CREATE TABLE IF NOT EXISTS upload_records (
+                    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+                    aweme_id            VARCHAR(64) NOT NULL,
+                    platform            ENUM('facebook', 'youtube') NOT NULL,
+                    account_id          INT NOT NULL,
+                    platform_video_id   VARCHAR(128) NULL,
+                    platform_url        TEXT NULL,
+                    title_used          TEXT NULL,
+                    description_used    TEXT NULL,
+                    tags_used           JSON NULL,
+                    status              ENUM('pending', 'uploading', 'success', 'failed') NOT NULL DEFAULT 'pending',
+                    error_message       TEXT NULL,
+                    uploaded_at         DATETIME NULL,
+                    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_upload_records_aweme_platform_account (aweme_id, platform, account_id),
+                    KEY idx_upload_records_status (status),
+                    KEY idx_upload_records_platform (platform)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+            )
+            return
+
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS channels (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                name            TEXT NOT NULL,
+                douyin_url      TEXT NOT NULL,
+                sec_uid         TEXT,
+                enabled         INTEGER NOT NULL DEFAULT 1,
+                sync_mode       TEXT NOT NULL DEFAULT 'incremental',
+                last_sync_at    TEXT,
+                notes           TEXT,
+                created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
+        await db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_channels_sec_uid ON channels(sec_uid)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_channels_enabled ON channels(enabled)"
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS video_assets (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                aweme_id        TEXT NOT NULL,
+                asset_type      TEXT NOT NULL,
+                file_path       TEXT NOT NULL,
+                file_size       INTEGER,
+                checksum        TEXT,
+                mime_type       TEXT,
+                created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(aweme_id, asset_type)
+            )
+        """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_video_assets_aweme_id ON video_assets(aweme_id)"
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_jobs (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                aweme_id        TEXT NOT NULL,
+                channel_id      INTEGER,
+                stage           TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                priority        INTEGER NOT NULL DEFAULT 0,
+                attempt_count   INTEGER NOT NULL DEFAULT 0,
+                max_attempts    INTEGER NOT NULL DEFAULT 3,
+                locked_by       TEXT,
+                locked_at       TEXT,
+                started_at      TEXT,
+                finished_at     TEXT,
+                error_message   TEXT,
+                result_json     TEXT,
+                created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(aweme_id, stage)
+            )
+        """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_pipeline_claim ON pipeline_jobs(stage, status, priority, created_at)"
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS upload_accounts (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                platform            TEXT NOT NULL,
+                account_name        TEXT NOT NULL,
+                page_id             TEXT,
+                youtube_channel_id  TEXT,
+                access_token        TEXT,
+                refresh_token       TEXT,
+                token_expires_at    TEXT,
+                app_id              TEXT,
+                app_secret          TEXT,
+                client_id           TEXT,
+                client_secret       TEXT,
+                api_key             TEXT,
+                enabled             INTEGER NOT NULL DEFAULT 1,
+                daily_quota         INTEGER,
+                notes               TEXT,
+                created_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(platform, account_name)
+            )
+        """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS upload_records (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                aweme_id            TEXT NOT NULL,
+                platform            TEXT NOT NULL,
+                account_id          INTEGER NOT NULL,
+                platform_video_id   TEXT,
+                platform_url        TEXT,
+                title_used          TEXT,
+                description_used    TEXT,
+                tags_used           TEXT,
+                status              TEXT NOT NULL DEFAULT 'pending',
+                error_message       TEXT,
+                uploaded_at         TEXT,
+                created_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(aweme_id, platform, account_id)
+            )
+        """
+        )
+
+    def _upsert_aweme_sql(self) -> str:
+        cols = (
+            "aweme_id, aweme_type, channel_id, title, author_id, author_name, author_sec_uid, "
+            "create_time, download_time, download_status, file_path, metadata, "
+            "title_vi, description_vi, tags_vi"
+        )
+        values = self._placeholder(15)
+        if self.engine == "mysql":
+            return f"""
+                INSERT INTO aweme ({cols}) VALUES ({values})
+                ON DUPLICATE KEY UPDATE
+                    aweme_type=VALUES(aweme_type),
+                    channel_id=VALUES(channel_id),
+                    title=VALUES(title),
+                    author_id=VALUES(author_id),
+                    author_name=VALUES(author_name),
+                    author_sec_uid=VALUES(author_sec_uid),
+                    create_time=VALUES(create_time),
+                    download_time=VALUES(download_time),
+                    download_status=VALUES(download_status),
+                    file_path=VALUES(file_path),
+                    metadata=VALUES(metadata),
+                    title_vi=VALUES(title_vi),
+                    description_vi=VALUES(description_vi),
+                    tags_vi=VALUES(tags_vi)
+            """
+        return f"""
+            INSERT OR REPLACE INTO aweme ({cols}) VALUES ({values})
+        """
+
+    def _aweme_row_values(self, aweme_data: Dict[str, Any], *, download_time: Optional[int] = None) -> tuple:
+        tags_vi_raw = aweme_data.get("tags_vi")
+        if isinstance(tags_vi_raw, list):
+            tags_vi_value = json.dumps(tags_vi_raw, ensure_ascii=False)
+        else:
+            tags_vi_value = tags_vi_raw
+        ts = download_time if download_time is not None else int(datetime.now().timestamp())
+        return (
+            aweme_data.get("aweme_id"),
+            aweme_data.get("aweme_type"),
+            aweme_data.get("channel_id"),
+            aweme_data.get("title"),
+            aweme_data.get("author_id"),
+            aweme_data.get("author_name"),
+            aweme_data.get("author_sec_uid"),
+            aweme_data.get("create_time"),
+            ts,
+            aweme_data.get("download_status") or "success",
+            aweme_data.get("file_path"),
+            aweme_data.get("metadata"),
+            aweme_data.get("title_vi"),
+            aweme_data.get("description_vi"),
+            tags_vi_value,
+        )
 
     async def is_downloaded(self, aweme_id: str) -> bool:
         db = await self._get_conn()
-        cursor = await db.execute("SELECT id FROM aweme WHERE aweme_id = ?", (aweme_id,))
+        cursor = await db.execute(
+            f"SELECT id FROM aweme WHERE aweme_id = {self._placeholder()}",
+            (aweme_id,),
+        )
         result = await cursor.fetchone()
         return result is not None
 
@@ -153,67 +654,33 @@ class Database:
         author_sec_uid: Optional[str] = None,
     ):
         db = await self._get_conn()
-        # Prefer the explicit kwarg; fall back to a key on the payload so existing
-        # callers (tests, legacy downloaders) keep working.
         sec_uid = author_sec_uid if author_sec_uid is not None else aweme_data.get("author_sec_uid")
-        await db.execute(
-            """
-            INSERT OR REPLACE INTO aweme
-            (aweme_id, aweme_type, title, author_id, author_name, author_sec_uid,
-             create_time, download_time, file_path, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (
-                aweme_data.get("aweme_id"),
-                aweme_data.get("aweme_type"),
-                aweme_data.get("title"),
-                aweme_data.get("author_id"),
-                aweme_data.get("author_name"),
-                sec_uid,
-                aweme_data.get("create_time"),
-                int(datetime.now().timestamp()),
-                aweme_data.get("file_path"),
-                aweme_data.get("metadata"),
-            ),
-        )
+        if sec_uid is not None and aweme_data.get("author_sec_uid") is None:
+            aweme_data = dict(aweme_data)
+            aweme_data["author_sec_uid"] = sec_uid
+        sql = self._upsert_aweme_sql()
+        await db.execute(sql, self._aweme_row_values(aweme_data))
         await db.commit()
 
     async def add_aweme_batch(self, items: List[Dict[str, Any]]) -> None:
-        """Insert N awemes in a single transaction. Replaces existing rows by aweme_id."""
         if not items:
             return
         db = await self._get_conn()
         now_ts = int(datetime.now().timestamp())
-        rows = [
-            (
-                item.get("aweme_id"),
-                item.get("aweme_type"),
-                item.get("title"),
-                item.get("author_id"),
-                item.get("author_name"),
-                item.get("author_sec_uid"),
-                item.get("create_time"),
-                now_ts,
-                item.get("file_path"),
-                item.get("metadata"),
-            )
-            for item in items
-        ]
-        await db.executemany(
-            """
-            INSERT OR REPLACE INTO aweme
-            (aweme_id, aweme_type, title, author_id, author_name, author_sec_uid,
-             create_time, download_time, file_path, metadata)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            rows,
-        )
+        rows = [self._aweme_row_values(item, download_time=now_ts) for item in items]
+        sql = self._upsert_aweme_sql()
+        if self.engine == "mysql":
+            for row in rows:
+                await db.execute(sql, row)
+        else:
+            await db.executemany(sql, rows)
         await db.commit()
 
     async def get_latest_aweme_time(self, author_id: str) -> Optional[int]:
         db = await self._get_conn()
         cursor = await db.execute(
-            "SELECT MAX(create_time) FROM aweme WHERE author_id = ?", (author_id,)
+            f"SELECT MAX(create_time) FROM aweme WHERE author_id = {self._placeholder()}",
+            (author_id,),
         )
         result = await cursor.fetchone()
         return result[0] if result and result[0] else None
@@ -221,10 +688,10 @@ class Database:
     async def add_history(self, history_data: Dict[str, Any]):
         db = await self._get_conn()
         await db.execute(
-            """
+            f"""
             INSERT INTO download_history
             (url, url_type, download_time, total_count, success_count, config)
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES ({self._placeholder(6)})
         """,
             (
                 history_data.get("url"),
@@ -248,29 +715,23 @@ class Database:
         aweme_type: Optional[str] = None,
         title: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Paginated aweme history, newest download first.
-
-        `date_from` / `date_to` are unix-seconds (filter against `create_time`).
-        `aweme_type` matches the `aweme_type` column (e.g. 'video', 'gallery').
-        `title` is a case-insensitive substring match on the title column.
-        """
         db = await self._get_conn()
         where: list = []
         params: list = []
         if author:
-            where.append("author_name = ?")
+            where.append(f"author_name = {self._placeholder()}")
             params.append(author)
         if date_from is not None:
-            where.append("create_time >= ?")
+            where.append(f"create_time >= {self._placeholder()}")
             params.append(int(date_from))
         if date_to is not None:
-            where.append("create_time <= ?")
+            where.append(f"create_time <= {self._placeholder()}")
             params.append(int(date_to))
         if aweme_type:
-            where.append("aweme_type = ?")
+            where.append(f"aweme_type = {self._placeholder()}")
             params.append(aweme_type)
         if title:
-            where.append("LOWER(COALESCE(title, '')) LIKE ?")
+            where.append(f"LOWER(COALESCE(title, '')) LIKE {self._placeholder()}")
             params.append(f"%{title.lower()}%")
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
@@ -282,7 +743,8 @@ class Database:
         cursor = await db.execute(
             f"SELECT aweme_id, aweme_type, title, author_id, author_name, "
             f"author_sec_uid, create_time, download_time, file_path FROM aweme "
-            f"{where_sql} ORDER BY download_time DESC, id DESC LIMIT ? OFFSET ?",
+            f"{where_sql} ORDER BY download_time DESC, id DESC "
+            f"LIMIT {self._placeholder()} OFFSET {self._placeholder()}",
             params + [int(size), int(offset)],
         )
         rows = await cursor.fetchall()
@@ -304,30 +766,18 @@ class Database:
 
     async def get_aweme_count_by_author(self, author_id: str) -> int:
         db = await self._get_conn()
-        cursor = await db.execute("SELECT COUNT(*) FROM aweme WHERE author_id = ?", (author_id,))
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM aweme WHERE author_id = {self._placeholder()}",
+            (author_id,),
+        )
         result = await cursor.fetchone()
         return result[0] if result else 0
 
     async def get_top_authors(self, *, days: int, limit: int) -> List[Dict[str, Any]]:
-        """Return the most-downloaded authors in the last ``days`` days.
-
-        Aggregates rows in `aweme` with ``create_time >= now - days*86400`` and
-        non-empty / non-null ``author_sec_uid``. Groups by ``author_sec_uid``
-        and orders by ``COUNT(*) DESC, author_sec_uid ASC`` (stable tie-break
-        so property tests are deterministic). Truncates to ``limit`` rows.
-
-        ``author_name`` for each result row is the latest non-empty
-        ``author_name`` for that ``sec_uid`` (ordered by ``download_time``
-        descending). If all rows for that sec_uid have empty/null names,
-        falls back to the Chinese placeholder ``"未知作者"``.
-
-        Each returned dict contains ``sec_uid`` / ``author_name`` /
-        ``download_count``.
-        """
         cutoff = int(datetime.now().timestamp()) - int(days) * 86400
         db = await self._get_conn()
         cursor = await db.execute(
-            """
+            f"""
             SELECT a.author_sec_uid,
                    (SELECT a2.author_name FROM aweme a2
                      WHERE a2.author_sec_uid = a.author_sec_uid
@@ -337,12 +787,12 @@ class Database:
                      LIMIT 1) AS author_name,
                    COUNT(*) AS download_count
               FROM aweme a
-             WHERE a.create_time >= ?
+             WHERE a.create_time >= {self._placeholder()}
                AND a.author_sec_uid IS NOT NULL
                AND a.author_sec_uid != ''
              GROUP BY a.author_sec_uid
              ORDER BY download_count DESC, a.author_sec_uid ASC
-             LIMIT ?
+             LIMIT {self._placeholder()}
             """,
             (cutoff, int(limit)),
         )
@@ -350,7 +800,7 @@ class Database:
         return [
             {
                 "sec_uid": row[0],
-                "author_name": row[1] if row[1] else "未知作者",
+                "author_name": row[1] if row[1] else "Unknown author",
                 "download_count": int(row[2]),
             }
             for row in rows
@@ -359,31 +809,40 @@ class Database:
     async def upsert_transcript_job(self, job_data: Dict[str, Any]):
         now_ts = int(datetime.now().timestamp())
         db = await self._get_conn()
-        await db.execute(
+        if self.engine == "mysql":
+            sql = f"""
+                INSERT INTO transcript_job (
+                    aweme_id, video_path, transcript_dir, text_path, json_path,
+                    model, status, skip_reason, error_message, created_at, updated_at
+                )
+                VALUES ({self._placeholder(11)})
+                ON DUPLICATE KEY UPDATE
+                    transcript_dir=VALUES(transcript_dir),
+                    text_path=VALUES(text_path),
+                    json_path=VALUES(json_path),
+                    status=VALUES(status),
+                    skip_reason=VALUES(skip_reason),
+                    error_message=VALUES(error_message),
+                    updated_at=VALUES(updated_at)
             """
-            INSERT INTO transcript_job (
-                aweme_id,
-                video_path,
-                transcript_dir,
-                text_path,
-                json_path,
-                model,
-                status,
-                skip_reason,
-                error_message,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(aweme_id, video_path, model) DO UPDATE SET
-                transcript_dir = excluded.transcript_dir,
-                text_path = excluded.text_path,
-                json_path = excluded.json_path,
-                status = excluded.status,
-                skip_reason = excluded.skip_reason,
-                error_message = excluded.error_message,
-                updated_at = excluded.updated_at
-        """,
+        else:
+            sql = f"""
+                INSERT INTO transcript_job (
+                    aweme_id, video_path, transcript_dir, text_path, json_path,
+                    model, status, skip_reason, error_message, created_at, updated_at
+                )
+                VALUES ({self._placeholder(11)})
+                ON CONFLICT(aweme_id, video_path, model) DO UPDATE SET
+                    transcript_dir = excluded.transcript_dir,
+                    text_path = excluded.text_path,
+                    json_path = excluded.json_path,
+                    status = excluded.status,
+                    skip_reason = excluded.skip_reason,
+                    error_message = excluded.error_message,
+                    updated_at = excluded.updated_at
+            """
+        await db.execute(
+            sql,
             (
                 job_data.get("aweme_id"),
                 job_data.get("video_path"),
@@ -403,11 +862,11 @@ class Database:
     async def get_transcript_job(self, aweme_id: str) -> Optional[Dict[str, Any]]:
         db = await self._get_conn()
         cursor = await db.execute(
-            """
+            f"""
             SELECT aweme_id, video_path, transcript_dir, text_path, json_path,
                    model, status, skip_reason, error_message, created_at, updated_at
             FROM transcript_job
-            WHERE aweme_id = ?
+            WHERE aweme_id = {self._placeholder()}
             ORDER BY updated_at DESC, id DESC
             LIMIT 1
             """,
@@ -431,20 +890,8 @@ class Database:
         }
 
     async def delete_aweme_by_ids(self, aweme_ids: List[str]) -> int:
-        """Delete aweme rows by their string id. Returns the number of rows removed.
-
-        Empty input is a no-op that returns 0 without issuing any SQL.
-
-        Uses a parameterized ``DELETE ... WHERE aweme_id IN (?,?,...)`` statement
-        because ``aiosqlite.Cursor.rowcount`` is not reliably populated after
-        ``executemany`` across all versions. Chunked at 500 ids per statement to
-        stay well below SQLite's host-parameter limit (historically 999).
-        """
         if not aweme_ids:
             return 0
-        # De-duplicate input while preserving a stable order. Duplicate ids would
-        # otherwise match the same row twice in different chunks and inflate the
-        # returned count beyond the rows actually affected.
         seen: Dict[str, None] = {}
         for aid in aweme_ids:
             if aid not in seen:
@@ -459,7 +906,7 @@ class Database:
         async with self._conn_lock:
             for start in range(0, len(unique_ids), chunk_size):
                 chunk = unique_ids[start : start + chunk_size]
-                placeholders = ",".join("?" for _ in chunk)
+                placeholders = self._in_clause(len(chunk))
                 cursor = await db.execute(
                     f"DELETE FROM aweme WHERE aweme_id IN ({placeholders})",
                     chunk,
@@ -470,10 +917,6 @@ class Database:
         return deleted
 
     async def truncate_history(self) -> None:
-        """Delete every row from `aweme` and `download_history`.
-
-        Does not touch disk files or any other table (e.g. transcript_job).
-        """
         db = await self._get_conn()
         if self._conn_lock is None:
             self._conn_lock = asyncio.Lock()
@@ -482,20 +925,7 @@ class Database:
             await db.execute("DELETE FROM download_history")
             await db.commit()
 
-    # ------------------------------------------------------------------
-    # Task-center job persistence (see server/jobs.py)
-    # ------------------------------------------------------------------
-
     async def upsert_job(self, job_dict: Dict[str, Any]) -> None:
-        """Insert or replace a task-center job record.
-
-        Accepts the dict produced by :py:meth:`server.jobs.DownloadJob.to_dict`
-        plus an optional ``overrides`` key (the JobManager stores overrides
-        separately on the in-memory job but we persist them too so future
-        retries/re-runs can inherit them). Unknown keys are ignored — any
-        renderer-only computed fields (``url_type``, ``duration_ms`` etc.)
-        are recomputed from raw columns on read.
-        """
         db = await self._get_conn()
         if self._conn_lock is None:
             self._conn_lock = asyncio.Lock()
@@ -523,23 +953,42 @@ class Database:
             json.dumps(retry_history) if retry_history else None,
             json.dumps(overrides) if overrides else None,
         )
+        cols = (
+            "job_id, url, status, created_at, started_at, finished_at, "
+            "total, success, failed, skipped, error, author_nickname, author_sec_uid, "
+            "retry_count, last_retry_at, last_retry_summary, retry_history, overrides"
+        )
+        if self.engine == "mysql":
+            sql = f"""
+                INSERT INTO job ({cols}) VALUES ({self._placeholder(18)})
+                ON DUPLICATE KEY UPDATE
+                    url=VALUES(url),
+                    status=VALUES(status),
+                    created_at=VALUES(created_at),
+                    started_at=VALUES(started_at),
+                    finished_at=VALUES(finished_at),
+                    total=VALUES(total),
+                    success=VALUES(success),
+                    failed=VALUES(failed),
+                    skipped=VALUES(skipped),
+                    error=VALUES(error),
+                    author_nickname=VALUES(author_nickname),
+                    author_sec_uid=VALUES(author_sec_uid),
+                    retry_count=VALUES(retry_count),
+                    last_retry_at=VALUES(last_retry_at),
+                    last_retry_summary=VALUES(last_retry_summary),
+                    retry_history=VALUES(retry_history),
+                    overrides=VALUES(overrides)
+            """
+        else:
+            sql = f"""
+                INSERT OR REPLACE INTO job ({cols}) VALUES ({self._placeholder(18)})
+            """
         async with self._conn_lock:
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO job (
-                    job_id, url, status, created_at, started_at, finished_at,
-                    total, success, failed, skipped, error,
-                    author_nickname, author_sec_uid,
-                    retry_count, last_retry_at, last_retry_summary,
-                    retry_history, overrides
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                params,
-            )
+            await db.execute(sql, params)
             await db.commit()
 
     async def delete_jobs(self, job_ids: List[str]) -> int:
-        """Delete job rows by id. Returns the number of rows deleted."""
         if not job_ids:
             return 0
         seen: Dict[str, None] = {}
@@ -558,7 +1007,7 @@ class Database:
         async with self._conn_lock:
             for start in range(0, len(unique_ids), chunk_size):
                 chunk = unique_ids[start : start + chunk_size]
-                placeholders = ",".join("?" for _ in chunk)
+                placeholders = self._in_clause(len(chunk))
                 cursor = await db.execute(
                     f"DELETE FROM job WHERE job_id IN ({placeholders})",
                     chunk,
@@ -569,13 +1018,6 @@ class Database:
         return deleted
 
     async def load_terminal_jobs(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """Load persisted terminal jobs ordered by created_at DESC.
-
-        Only rows whose ``status`` is a terminal value (success / failed /
-        cancelled) are returned. Running/pending rows shouldn't exist on
-        disk — see server/jobs.py — but we filter defensively in case an
-        older build left stale rows.
-        """
         db = await self._get_conn()
         if self._conn_lock is None:
             self._conn_lock = asyncio.Lock()
@@ -637,6 +1079,397 @@ class Database:
                 }
             )
         return result
+
+    async def upsert_channel(
+        self,
+        *,
+        name: str,
+        douyin_url: str,
+        sec_uid: Optional[str] = None,
+        enabled: int = 1,
+        sync_mode: str = "incremental",
+        notes: Optional[str] = None,
+    ) -> int:
+        db = await self._get_conn()
+        if sec_uid:
+            cursor = await db.execute(
+                f"SELECT id FROM channels WHERE sec_uid = {self._placeholder()}",
+                (sec_uid,),
+            )
+            row = await cursor.fetchone()
+            if row:
+                channel_id = int(row[0])
+                await db.execute(
+                    f"""
+                    UPDATE channels SET name = {self._placeholder()},
+                        douyin_url = {self._placeholder()}, enabled = {self._placeholder()},
+                        sync_mode = {self._placeholder()}, notes = {self._placeholder()}
+                    WHERE id = {self._placeholder()}
+                    """,
+                    (name, douyin_url, enabled, sync_mode, notes, channel_id),
+                )
+                await db.commit()
+                return channel_id
+
+        cursor = await db.execute(
+            f"SELECT id FROM channels WHERE douyin_url = {self._placeholder()}",
+            (douyin_url,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            channel_id = int(row[0])
+            await db.execute(
+                f"""
+                UPDATE channels SET name = {self._placeholder()}, sec_uid = {self._placeholder()},
+                    enabled = {self._placeholder()}, sync_mode = {self._placeholder()},
+                    notes = {self._placeholder()}
+                WHERE id = {self._placeholder()}
+                """,
+                (name, sec_uid, enabled, sync_mode, notes, channel_id),
+            )
+            await db.commit()
+            return channel_id
+
+        if self.engine == "mysql":
+            await db.execute(
+                f"""
+                INSERT INTO channels (name, douyin_url, sec_uid, enabled, sync_mode, notes)
+                VALUES ({self._placeholder(6)})
+                """,
+                (name, douyin_url, sec_uid, enabled, sync_mode, notes),
+            )
+            cursor = await db.execute("SELECT LAST_INSERT_ID()")
+            row = await cursor.fetchone()
+            await db.commit()
+            return int(row[0])
+
+        await db.execute(
+            f"""
+            INSERT INTO channels (name, douyin_url, sec_uid, enabled, sync_mode, notes)
+            VALUES ({self._placeholder(6)})
+            """,
+            (name, douyin_url, sec_uid, enabled, sync_mode, notes),
+        )
+        cursor = await db.execute("SELECT last_insert_rowid()")
+        row = await cursor.fetchone()
+        await db.commit()
+        return int(row[0])
+
+    async def ensure_channel_for_user(
+        self,
+        douyin_url: str,
+        sec_uid: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> int:
+        label = name or sec_uid or douyin_url
+        if len(label) > 255:
+            label = label[:252] + "..."
+        return await self.upsert_channel(name=label, douyin_url=douyin_url, sec_uid=sec_uid)
+
+    async def sync_channels_from_urls(self, urls: Sequence[str]) -> None:
+        from core.url_parser import URLParser
+
+        for url in urls:
+            if not url:
+                continue
+            parsed = URLParser.parse(url)
+            sec_uid = parsed.get("sec_uid") if parsed else None
+            name = sec_uid or url
+            await self.ensure_channel_for_user(url, sec_uid=sec_uid, name=name)
+
+    async def get_enabled_channels(self) -> List[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT id, name, douyin_url, sec_uid, enabled, sync_mode, last_sync_at
+            FROM channels WHERE enabled = 1 ORDER BY id ASC
+            """
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "douyin_url": row[2],
+                "sec_uid": row[3],
+                "enabled": row[4],
+                "sync_mode": row[5],
+                "last_sync_at": row[6],
+            }
+            for row in rows
+        ]
+
+    async def resolve_download_urls(self, config_links: Sequence[str]) -> List[str]:
+        channels = await self.get_enabled_channels()
+        if channels:
+            return [str(c["douyin_url"]) for c in channels if c.get("douyin_url")]
+        return list(config_links)
+
+    async def pick_next_channel_for_sync(self) -> Optional[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            """
+            SELECT id, name, douyin_url, sec_uid, enabled, sync_mode, last_sync_at
+            FROM channels
+            WHERE enabled = 1
+            ORDER BY last_sync_at IS NULL DESC, last_sync_at ASC, id ASC
+            LIMIT 1
+            """
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "name": row[1],
+            "douyin_url": row[2],
+            "sec_uid": row[3],
+            "enabled": row[4],
+            "sync_mode": row[5],
+            "last_sync_at": row[6],
+        }
+
+    async def mysql_get_lock(self, lock_name: str, timeout_seconds: int) -> bool:
+        if self.engine != "mysql":
+            return False
+        db = await self._get_conn()
+        cursor = await db.execute(
+            "SELECT GET_LOCK(%s, %s)",
+            (lock_name, int(timeout_seconds)),
+        )
+        row = await cursor.fetchone()
+        return bool(row and row[0] == 1)
+
+    async def mysql_release_lock(self, lock_name: str) -> None:
+        if self.engine != "mysql":
+            return
+        db = await self._get_conn()
+        await db.execute("SELECT RELEASE_LOCK(%s)", (lock_name,))
+
+    async def update_channel_last_sync(self, channel_id: int) -> None:
+        db = await self._get_conn()
+        if self.engine == "mysql":
+            await db.execute(
+                "UPDATE channels SET last_sync_at = NOW() WHERE id = %s",
+                (channel_id,),
+            )
+        else:
+            await db.execute(
+                f"UPDATE channels SET last_sync_at = {self._placeholder()} WHERE id = {self._placeholder()}",
+                (datetime.now().isoformat(sep=" ", timespec="seconds"), channel_id),
+            )
+        await db.commit()
+
+    async def upsert_video_asset(
+        self,
+        *,
+        aweme_id: str,
+        asset_type: str,
+        file_path: str,
+        file_size: Optional[int] = None,
+        mime_type: Optional[str] = None,
+        checksum: Optional[str] = None,
+    ) -> None:
+        db = await self._get_conn()
+        if self.engine == "mysql":
+            sql = f"""
+                INSERT INTO video_assets
+                (aweme_id, asset_type, file_path, file_size, checksum, mime_type)
+                VALUES ({self._placeholder(6)})
+                ON DUPLICATE KEY UPDATE
+                    file_path=VALUES(file_path),
+                    file_size=VALUES(file_size),
+                    checksum=VALUES(checksum),
+                    mime_type=VALUES(mime_type)
+            """
+        else:
+            sql = f"""
+                INSERT INTO video_assets
+                (aweme_id, asset_type, file_path, file_size, checksum, mime_type)
+                VALUES ({self._placeholder(6)})
+                ON CONFLICT(aweme_id, asset_type) DO UPDATE SET
+                    file_path = excluded.file_path,
+                    file_size = excluded.file_size,
+                    checksum = excluded.checksum,
+                    mime_type = excluded.mime_type
+            """
+        await db.execute(
+            sql,
+            (aweme_id, asset_type, file_path, file_size, checksum, mime_type),
+        )
+
+    async def get_pipeline_job_status(self, aweme_id: str, stage: str) -> Optional[str]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            f"""
+            SELECT status FROM pipeline_jobs
+            WHERE aweme_id = {self._placeholder()} AND stage = {self._placeholder()}
+            """,
+            (aweme_id, stage),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+    async def upsert_pipeline_job(
+        self,
+        *,
+        aweme_id: str,
+        stage: str,
+        status: str,
+        channel_id: Optional[int] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        db = await self._get_conn()
+        if self.engine == "mysql":
+            sql = f"""
+                INSERT INTO pipeline_jobs
+                (aweme_id, channel_id, stage, status, error_message, finished_at)
+                VALUES ({self._placeholder(6)})
+                ON DUPLICATE KEY UPDATE
+                    channel_id=VALUES(channel_id),
+                    status=VALUES(status),
+                    error_message=VALUES(error_message),
+                    finished_at=CASE
+                        WHEN VALUES(status) IN ('success', 'failed', 'skipped')
+                        THEN NOW() ELSE finished_at END
+            """
+            finished = datetime.now().isoformat(sep=" ", timespec="seconds")
+        else:
+            sql = f"""
+                INSERT INTO pipeline_jobs
+                (aweme_id, channel_id, stage, status, error_message, finished_at)
+                VALUES ({self._placeholder(6)})
+                ON CONFLICT(aweme_id, stage) DO UPDATE SET
+                    channel_id = excluded.channel_id,
+                    status = excluded.status,
+                    error_message = excluded.error_message,
+                    finished_at = excluded.finished_at
+            """
+            finished = datetime.now().isoformat(sep=" ", timespec="seconds")
+        await db.execute(
+            sql,
+            (aweme_id, channel_id, stage, status, error_message, finished),
+        )
+
+    async def ensure_dub_pending_if_missing(
+        self,
+        *,
+        aweme_id: str,
+        channel_id: Optional[int] = None,
+    ) -> None:
+        existing = await self.get_pipeline_job_status(aweme_id, "dub")
+        if existing is not None:
+            return
+        db = await self._get_conn()
+        await db.execute(
+            f"""
+            INSERT INTO pipeline_jobs (aweme_id, channel_id, stage, status)
+            VALUES ({self._placeholder(4)})
+            """,
+            (aweme_id, channel_id, "dub", "pending"),
+        )
+
+    async def _upsert_video_assets_from_files(
+        self,
+        aweme_id: str,
+        downloaded_files: Sequence[Union[Path, str]],
+    ) -> None:
+        for entry in build_asset_entries([Path(p) for p in downloaded_files]):
+            await self.upsert_video_asset(
+                aweme_id=aweme_id,
+                asset_type=entry["asset_type"],
+                file_path=entry["file_path"],
+                file_size=entry.get("file_size"),
+                mime_type=entry.get("mime_type"),
+            )
+
+    async def complete_download_handoff(
+        self,
+        *,
+        aweme_id: str,
+        channel_id: Optional[int],
+        downloaded_files: Sequence[Union[Path, str]],
+        metadata_translate_ok: bool,
+        translation_enabled: bool,
+        download_status: str = "success",
+        commit: bool = True,
+    ) -> None:
+        db = await self._get_conn()
+        await self._upsert_video_assets_from_files(aweme_id, downloaded_files)
+        await self.upsert_pipeline_job(
+            aweme_id=aweme_id,
+            stage="download",
+            status=download_status,
+            channel_id=channel_id,
+        )
+        if not translation_enabled:
+            translate_status = "skipped"
+        elif metadata_translate_ok:
+            translate_status = "success"
+        else:
+            translate_status = "failed"
+        await self.upsert_pipeline_job(
+            aweme_id=aweme_id,
+            stage="metadata_translate",
+            status=translate_status,
+            channel_id=channel_id,
+        )
+        await self.ensure_dub_pending_if_missing(aweme_id=aweme_id, channel_id=channel_id)
+        if commit:
+            await db.commit()
+
+    async def handoff_skipped_download(
+        self,
+        *,
+        aweme_id: str,
+        channel_id: Optional[int],
+        base_path: Union[Path, str],
+        commit: bool = True,
+    ) -> None:
+        db = await self._get_conn()
+        source_mp4 = find_local_source_mp4(Path(base_path), aweme_id)
+        if source_mp4:
+            await self.upsert_video_asset(
+                aweme_id=aweme_id,
+                asset_type="source_mp4",
+                file_path=str(source_mp4),
+                file_size=source_mp4.stat().st_size,
+                mime_type="video/mp4",
+            )
+        await self.upsert_pipeline_job(
+            aweme_id=aweme_id,
+            stage="download",
+            status="skipped",
+            channel_id=channel_id,
+        )
+        await self.upsert_pipeline_job(
+            aweme_id=aweme_id,
+            stage="metadata_translate",
+            status="skipped",
+            channel_id=channel_id,
+        )
+        await self.ensure_dub_pending_if_missing(aweme_id=aweme_id, channel_id=channel_id)
+        if commit:
+            await db.commit()
+
+    async def mark_download_failed(
+        self,
+        *,
+        aweme_id: str,
+        channel_id: Optional[int] = None,
+        error_message: Optional[str] = None,
+        commit: bool = True,
+    ) -> None:
+        db = await self._get_conn()
+        await self.upsert_pipeline_job(
+            aweme_id=aweme_id,
+            stage="download",
+            status="failed",
+            channel_id=channel_id,
+            error_message=error_message,
+        )
+        if commit:
+            await db.commit()
 
     async def close(self):
         if self._conn is not None:

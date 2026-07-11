@@ -24,8 +24,8 @@ class UserDownloader(BaseDownloader):
         if not sec_uid:
             # URL parser already validates this; treat as fatal instead of
             # a silent empty result so the UI surfaces a real error rather
-            # than "已完成 0 项".
-            raise RuntimeError("无法从链接中解析出用户 ID，请确认链接是否完整")
+            # than "已Done 0 项".
+            raise RuntimeError("Could not parse user ID from link; verify the link is complete")
 
         modes_config = self.config.get("mode", ["post"])
         if isinstance(modes_config, str):
@@ -44,9 +44,9 @@ class UserDownloader(BaseDownloader):
             # Raising here instead of returning an empty result means the
             # job ends in `failed` state with a clear message. Returning
             # {total:0,success:0,failed:0} made JobManager mark it as
-            # `success`, which rendered as "已完成 0 项" — a silent failure
+            # `success`, which rendered as "已Done 0 项" — a silent failure
             # that's indistinguishable from "nothing happened" in the UI.
-            raise RuntimeError("获取用户信息失败，请检查 Cookie 是否有效或重新登录抖音")
+            raise RuntimeError("Failed to fetch user info; check cookies or re-login to Douyin")
 
         # Cache author metadata on the hosting job so retry doesn't have
         # to re-fetch user_info, and so JobRow can display the nickname.
@@ -55,7 +55,7 @@ class UserDownloader(BaseDownloader):
             sec_uid=user_info.get("sec_uid") or sec_uid,
         )
 
-        self._progress_update_step("下载模式", f"模式: {', '.join(modes)}")
+        self._progress_update_step("Download mode", f"Modes: {', '.join(modes)}")
 
         seen_aweme_ids: Set[str] = set()
         for mode in modes:
@@ -64,7 +64,7 @@ class UserDownloader(BaseDownloader):
                 logger.warning("Unsupported user mode: %s", mode)
                 continue
 
-            self._progress_update_step("下载模式", f"开始处理 {mode} 作品")
+            self._progress_update_step("Download mode", f"Processing {mode} items")
             mode_result = await strategy.download_mode(
                 sec_uid, user_info, seen_aweme_ids=seen_aweme_ids
             )
@@ -89,7 +89,7 @@ class UserDownloader(BaseDownloader):
             # mode + collects_id is the legit my-content path. Without
             # this branch ``download()`` would short-circuit and produce
             # an empty DownloadResult, which the JobManager renders as
-            # the silent "已完成 0 项" failure.
+            # the silent "已Done 0 项" failure.
             collects_id = (str(self.config.get("collects_id") or "")).strip()
             if not collects_id:
                 logger.error(
@@ -127,7 +127,7 @@ class UserDownloader(BaseDownloader):
     async def _resolve_user_info(self, sec_uid: str, modes: List[str]) -> Optional[Dict[str, Any]]:
         normalized_modes = {str(mode or "").strip() for mode in modes}
         if sec_uid == "self" and normalized_modes.issubset(self.SELF_COLLECT_MODES):
-            self._progress_update_step("获取作者信息", "使用当前登录账号收藏夹上下文")
+            self._progress_update_step("Fetching author info", "Using logged-in account favorites context")
             return {
                 "uid": "self",
                 "sec_uid": "self",
@@ -142,14 +142,14 @@ class UserDownloader(BaseDownloader):
             normalized_modes.issubset(self.SELF_COLLECT_MODES)
             and (str(self.config.get("collects_id") or "")).strip()
         ):
-            self._progress_update_step("获取作者信息", "使用当前登录账号收藏夹上下文")
+            self._progress_update_step("Fetching author info", "Using logged-in account favorites context")
             return {
                 "uid": sec_uid,
                 "sec_uid": sec_uid,
                 "nickname": "self",
             }
 
-        self._progress_update_step("获取作者信息", f"sec_uid={sec_uid}")
+        self._progress_update_step("Fetching author info", f"sec_uid={sec_uid}")
         return await self.api_client.get_user_info(sec_uid)
 
     def _get_mode_strategy(self, mode: str):
@@ -223,8 +223,8 @@ class UserDownloader(BaseDownloader):
 
         result = DownloadResult()
         result.total = len(deduped_items)
-        self._progress_set_item_total(result.total, "作品待下载")
-        self._progress_update_step("下载作品", f"待处理 {result.total} 条")
+        self._progress_set_item_total(result.total, "Items pending download")
+        self._progress_update_step("Downloading items", f"{result.total} item(s) pending")
 
         # Accumulate per-aweme DB records and flush in a single transaction
         # at the end — avoids one fsync per item across the whole batch.
@@ -233,12 +233,23 @@ class UserDownloader(BaseDownloader):
         async def _process_aweme(item: Dict[str, Any]):
             aweme_id = item.get("aweme_id")
             if not await self._should_download(str(aweme_id or "")):
+                if self.database and aweme_id:
+                    await self.database.handoff_skipped_download(
+                        aweme_id=str(aweme_id),
+                        channel_id=self.channel_id,
+                        base_path=self.file_manager.base_path,
+                    )
                 self._progress_advance_item("skipped", str(aweme_id or "unknown"))
                 return {"status": "skipped", "aweme_id": aweme_id}
 
             success = await self._download_aweme_assets(
                 item, author_name, mode=mode, db_batch=db_batch
             )
+            if not success and self.database and aweme_id:
+                await self.database.mark_download_failed(
+                    aweme_id=str(aweme_id),
+                    channel_id=self.channel_id,
+                )
             status = "success" if success else "failed"
             self._progress_advance_item(status, str(aweme_id or "unknown"))
             return {
@@ -337,7 +348,7 @@ class UserDownloader(BaseDownloader):
                 break
 
             if index == 1 or index == total_missing or index % 5 == 0:
-                self._progress_update_step("浏览器回补", f"补全详情 {index}/{total_missing}")
+                self._progress_update_step("Browser fallback", f"Filling details {index}/{total_missing}")
 
             detail = browser_aweme_items.get(str(aweme_id))
             if not detail:
@@ -362,8 +373,8 @@ class UserDownloader(BaseDownloader):
             aweme_list.append(detail)
 
         self._progress_update_step(
-            "浏览器回补",
-            f"回补完成，复用 {reused_from_browser_items}，补拉成功 {detail_success}，失败 {detail_failed}",
+            "Browser fallback",
+            f"Fallback complete: reused {reused_from_browser_items}, fetched {detail_success}, failed {detail_failed}",
         )
         logger.warning(
             "Browser fallback summary: merged_ids=%s selected_ids=%s post_items=%s post_pages=%s reused=%s detail_success=%s detail_failed=%s",

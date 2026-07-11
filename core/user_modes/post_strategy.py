@@ -26,7 +26,7 @@ class PostUserModeStrategy(BaseUserModeStrategy):
         number_limit = int(self.downloader.config.get("number", {}).get(self.mode_name, 0) or 0)
         media_filter_enabled = self._media_type_filter_enabled()
 
-        self.downloader._progress_update_step("拉取作品列表", "分页抓取中")
+        self.downloader._progress_update_step("Fetching post list", "Paginating")
 
         while has_more:
             await self.downloader.rate_limiter.acquire()
@@ -48,7 +48,7 @@ class PostUserModeStrategy(BaseUserModeStrategy):
             page_items = self._filter_pinned_items(page_items)
             aweme_list.extend(page_items)
 
-            self.downloader._progress_update_step("拉取作品列表", f"已抓取 {len(aweme_list)} 条")
+            self.downloader._progress_update_step("Fetching post list", f"Fetched {len(aweme_list)} item(s)")
 
             has_more = bool(page.get("has_more", False))
             max_cursor = int(page.get("max_cursor", 0) or 0)
@@ -69,12 +69,12 @@ class PostUserModeStrategy(BaseUserModeStrategy):
                     break
 
         if pagination_restricted:
-            self.downloader._progress_update_step("拉取作品列表", "分页受限，尝试浏览器回补")
+            self.downloader._progress_update_step("Fetching post list", "Pagination restricted; trying browser fallback")
             await self.downloader._recover_user_post_with_browser(sec_uid, user_info, aweme_list)
             if not aweme_list:
                 raise RuntimeError(
-                    "抖音接口未返回作品列表（可能触发了反爬限制），"
-                    "请稍后重试或尝试重新登录抖音刷新 Cookie"
+                    "Douyin API returned no posts (possible anti-bot limit);"
+                    "retry later or re-login to Douyin to refresh cookies"
                 )
 
         return aweme_list

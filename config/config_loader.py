@@ -62,7 +62,36 @@ class ConfigLoader:
                 )
         if os.getenv("DOUYIN_PROXY"):
             env_config["proxy"] = os.getenv("DOUYIN_PROXY")
+        if os.getenv("DOUYIN_DATABASE_ENGINE"):
+            env_config["database_engine"] = os.getenv("DOUYIN_DATABASE_ENGINE")
+        if os.getenv("DOUYIN_DATABASE_PATH"):
+            env_config["database_path"] = os.getenv("DOUYIN_DATABASE_PATH")
+        mysql_env = self._load_mysql_env_config()
+        if mysql_env:
+            env_config["database_mysql"] = mysql_env
         return env_config
+
+    def _load_mysql_env_config(self) -> Dict[str, Any]:
+        mapping = {
+            "host": "DOUYIN_MYSQL_HOST",
+            "port": "DOUYIN_MYSQL_PORT",
+            "user": "DOUYIN_MYSQL_USER",
+            "password": "DOUYIN_MYSQL_PASSWORD",
+            "database": "DOUYIN_MYSQL_DATABASE",
+        }
+        mysql_cfg: Dict[str, Any] = {}
+        for key, env_name in mapping.items():
+            value = os.getenv(env_name)
+            if value is None or value == "":
+                continue
+            if key == "port":
+                try:
+                    mysql_cfg[key] = int(value)
+                except (TypeError, ValueError):
+                    logger.warning("Invalid %s value: %s, ignoring", env_name, value)
+                continue
+            mysql_cfg[key] = value
+        return mysql_cfg
 
     def _normalize_mix_aliases(
         self, config: Dict[str, Any], override_sources: List[Dict[str, Any]]
@@ -329,12 +358,16 @@ class ConfigLoader:
 
     def get_links(self) -> List[str]:
         links = self.config.get("link", [])
+        if links is None:
+            return []
         if isinstance(links, str):
-            return [links]
-        return links
+            stripped = links.strip()
+            return [stripped] if stripped else []
+        return [str(item).strip() for item in links if item and str(item).strip()]
 
     def validate(self) -> bool:
-        if not self.get_links():
+        links = self.get_links()
+        if not links and not self.config.get("database"):
             return False
         if not self.config.get("path"):
             return False

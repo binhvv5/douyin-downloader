@@ -38,7 +38,7 @@ class ProgressDisplay:
         banner = """
 ╔══════════════════════════════════════════╗
 ║     Douyin Downloader v2.0.0            ║
-║     抖音批量下载工具                     ║
+║     Douyin Batch Downloader              ║
 ╚══════════════════════════════════════════╝
         """
         self._active_console().print(banner, style="bold cyan")
@@ -64,10 +64,10 @@ class ProgressDisplay:
         self._progress = self._progress_ctx.__enter__()
         self._single_url_item_mode = False
         self._overall_task_id = self._progress.add_task(
-            "总体进度",
+            "Overall progress",
             total=max(total_urls, 1),
             completed=0,
-            detail=f"共 {total_urls} 个 URL",
+            detail=f"{total_urls} URL(s) total",
         )
 
     def stop_download_session(self):
@@ -94,7 +94,7 @@ class ProgressDisplay:
             return
 
         self._url_task_id = self._progress.add_task(
-            self._format_url_description("待开始"),
+            self._format_url_description("Pending"),
             total=self._URL_STEP_TOTAL,
             completed=0,
             detail=self._shorten(url, max_len=72),
@@ -104,11 +104,11 @@ class ProgressDisplay:
         if self._progress and self._url_task_id is not None:
             detail = ""
             if result:
-                detail = f"成功 {result.success} / 失败 {result.failed} / 跳过 {result.skipped}"
+                detail = f"Success {result.success} / Failed {result.failed} / Skipped {result.skipped}"
             self._progress.update(
                 self._url_task_id,
                 completed=self._URL_STEP_TOTAL,
-                description=self._format_url_description("完成"),
+                description=self._format_url_description("Done"),
                 detail=detail,
             )
 
@@ -123,7 +123,7 @@ class ProgressDisplay:
             self._progress.update(
                 self._url_task_id,
                 completed=self._URL_STEP_TOTAL,
-                description=self._format_url_description("失败"),
+                description=self._format_url_description("Failed"),
                 detail=reason,
             )
 
@@ -169,11 +169,11 @@ class ProgressDisplay:
                 self._overall_task_id,
                 total=self._item_total,
                 completed=self._item_completed,
-                detail=f"共 {total} 个作品",
+                detail=f"{total} item(s) total",
             )
 
         description = self._format_item_description()
-        item_detail = detail or ("无待下载条目" if total == 0 else "")
+        item_detail = detail or ("No items to download" if total == 0 else "")
 
         if self._item_task_id is None:
             self._item_task_id = self._progress.add_task(
@@ -196,7 +196,7 @@ class ProgressDisplay:
         if not self._progress:
             return
         if self._item_task_id is None:
-            self.set_item_total(1, "初始化条目进度")
+            self.set_item_total(1, "Initializing item progress")
         assert self._item_task_id is not None
 
         if status in self._item_stats:
@@ -204,9 +204,9 @@ class ProgressDisplay:
         if self._item_completed < self._item_total:
             self._item_completed += 1
 
-        status_map = {"success": "成功", "failed": "失败", "skipped": "跳过"}
+        status_map = {"success": "Success", "failed": "Failed", "skipped": "Skipped"}
         status_text = status_map.get(status, status)
-        item_detail = f"最近: {status_text} {self._shorten(detail, max_len=36)}"
+        item_detail = f"Latest: {status_text} {self._shorten(detail, max_len=36)}"
 
         self._progress.update(
             self._item_task_id,
@@ -218,7 +218,7 @@ class ProgressDisplay:
             self._progress.update(
                 self._overall_task_id,
                 completed=self._item_completed,
-                detail=f"共 {self._item_total} 个作品",
+                detail=f"{self._item_total} item(s) total",
             )
 
     def show_result(self, result):
@@ -267,7 +267,7 @@ class ProgressDisplay:
 
     def _format_item_description(self) -> str:
         return (
-            "作品下载 "
+            "Downloading items "
             f"S:{self._item_stats['success']} "
             f"F:{self._item_stats['failed']} "
             f"K:{self._item_stats['skipped']}"

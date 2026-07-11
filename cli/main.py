@@ -2,9 +2,10 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from auth import CookieManager
 from cli.progress_display import ProgressDisplay
@@ -13,9 +14,10 @@ from control import QueueManager, RateLimiter, RetryHandler
 from core import DouyinAPIClient, DownloaderFactory, URLParser
 from core import LoginRequiredError
 from cli.login_flow import can_interactive_login, interactive_relogin
-from storage import Database, FileManager
+from storage import Database, FileManager, create_database
 from utils.logger import set_console_log_level, setup_logger
 from utils.notifier import build_notifier
+from control.channel_download_lock import ChannelDownloadLock
 from utils.validators import is_short_url, normalize_short_url
 
 logger = setup_logger("CLI")
@@ -47,24 +49,24 @@ async def _run_with_relogin(make_coro, cookie_manager, *, serve=False):
             interactive = can_interactive_login(serve=serve)
             if attempt == 1 or not interactive:
                 display.print_error(
-                    f"登录态失效，需要重新登录（status {exc.status_code}）："
-                    f"{exc.status_msg or '请先登录'}。"
+                    f"Session expired; re-login required (status {exc.status_code}):"
+                    f"{exc.status_msg or 'Please log in first'}。"
                 )
                 if not interactive:
                     display.print_warning(
-                        "当前为非交互环境，未自动打开浏览器。请手动更新 "
-                        "config/cookies.json（或运行 python tools/cookie_fetcher.py 登录）。"
+                        "Non-interactive environment; browser not opened. Manually update "
+                        "config/cookies.json (or run python tools/cookie_fetcher.py to log in)."
                     )
                 raise
             display.print_warning(
-                f"检测到未登录（status {exc.status_code}），开始重新登录…"
+                f"Not logged in (status {exc.status_code}); starting re-login…"
             )
             new_cookies = await interactive_relogin()
             if not new_cookies:
-                display.print_error("重新登录未完成，已中止。")
+                display.print_error("Re-login incomplete; aborted.")
                 raise
             cookie_manager.set_cookies(new_cookies)
-            display.print_success("已更新登录态，正在重试…")
+            display.print_success("Session updated; retrying…")
 
 
 async def download_url(
@@ -73,9 +75,52 @@ async def download_url(
     cookie_manager: CookieManager,
     database: Database = None,
     progress_reporter: ProgressDisplay = None,
+    *,
+    channel_id: Optional[int] = None,
+    acquire_channel_lock: bool = True,
+    channel_lock_timeout: int = 3600,
+):
+    lock = None
+    if acquire_channel_lock:
+        lock = ChannelDownloadLock(database, lock_dir=config.get("path") or "./Downloaded/")
+        acquired = await lock.try_acquire(
+            holder=f"download-{os.getpid()}",
+            timeout_seconds=int(channel_lock_timeout or 0),
+        )
+        if not acquired:
+            if progress_reporter:
+                progress_reporter.update_step("Downloading", "Another channel download is in progress")
+            display.print_error(
+                "Cannot download: another channel download is in progress "
+                "(only one channel at a time)"
+            )
+            return None
+
+    try:
+        return await _download_url_inner(
+            url,
+            config,
+            cookie_manager,
+            database,
+            progress_reporter,
+            channel_id=channel_id,
+        )
+    finally:
+        if lock is not None:
+            await lock.release()
+
+
+async def _download_url_inner(
+    url: str,
+    config: ConfigLoader,
+    cookie_manager: CookieManager,
+    database: Database = None,
+    progress_reporter: ProgressDisplay = None,
+    *,
+    channel_id: Optional[int] = None,
 ):
     if progress_reporter:
-        progress_reporter.advance_step("初始化", "创建下载组件")
+        progress_reporter.advance_step("Initializing", "Creating download components")
     file_manager = FileManager(config.get("path"))
     rate_limiter = RateLimiter(max_per_second=float(config.get("rate_limit", 2) or 2))
     retry_handler = RetryHandler(max_retries=config.get("retry_times", 3))
@@ -88,7 +133,7 @@ async def download_url(
         proxy=config.get("proxy"),
     ) as api_client:
         if progress_reporter:
-            progress_reporter.advance_step("解析链接", "检查短链并解析 URL")
+            progress_reporter.advance_step("Parsing link", "Resolving short URL")
         # 支持多种短链变体：v.douyin.com / v.iesdouyin.com / 无 scheme 的裸链接
         if is_short_url(url):
             resolved_url = await api_client.resolve_short_url(normalize_short_url(url))
@@ -96,21 +141,21 @@ async def download_url(
                 url = resolved_url
             else:
                 if progress_reporter:
-                    progress_reporter.update_step("解析链接", "短链解析失败")
+                    progress_reporter.update_step("Parsing link", "Short URL resolution failed")
                 display.print_error(f"Failed to resolve short URL: {url}")
                 return None
 
         parsed = URLParser.parse(url)
         if not parsed:
             if progress_reporter:
-                progress_reporter.update_step("解析链接", "URL 解析失败")
+                progress_reporter.update_step("Parsing link", "URL parsing failed")
             display.print_error(f"Failed to parse URL: {url}")
             return None
 
         if not progress_reporter:
             display.print_info(f"URL type: {parsed['type']}")
         if progress_reporter:
-            progress_reporter.advance_step("创建下载器", f"URL 类型: {parsed['type']}")
+            progress_reporter.advance_step("Creating downloader", f"URL type: {parsed['type']}")
 
         downloader = DownloaderFactory.create(
             parsed["type"],
@@ -127,12 +172,22 @@ async def download_url(
 
         if not downloader:
             if progress_reporter:
-                progress_reporter.update_step("创建下载器", "未找到匹配下载器")
+                progress_reporter.update_step("Creating downloader", "No matching downloader found")
             display.print_error(f"No downloader found for type: {parsed['type']}")
             return None
 
+        if database and parsed.get("type") == "user":
+            if channel_id is not None:
+                downloader.channel_id = channel_id
+            else:
+                resolved_channel_id = await database.ensure_channel_for_user(
+                    url,
+                    sec_uid=parsed.get("sec_uid"),
+                )
+                downloader.channel_id = resolved_channel_id
+
         if progress_reporter:
-            progress_reporter.advance_step("执行下载", "开始拉取与下载资源")
+            progress_reporter.advance_step("Downloading", "Fetching and downloading resources")
         try:
             result = await downloader.download(parsed)
         except Exception as exc:
@@ -141,14 +196,14 @@ async def download_url(
             # crashing the whole batch. Keeps multi-URL CLI runs robust while
             # still telling the user why the URL was skipped.
             if progress_reporter:
-                progress_reporter.update_step("执行下载", f"失败：{exc}")
+                progress_reporter.update_step("Downloading", f"Failed：{exc}")
             display.print_error(f"Download failed for {url}: {exc}")
             return None
 
         if progress_reporter:
             progress_reporter.advance_step(
-                "记录历史",
-                "写入数据库历史" if (result and database) else "数据库未启用，跳过",
+                "Recording history",
+                "Writing download history" if (result and database) else "Database disabled; skipping",
             )
         if result and database:
             safe_config = {
@@ -165,15 +220,17 @@ async def download_url(
                     "config": json.dumps(safe_config, ensure_ascii=False),
                 }
             )
+            if parsed.get("type") == "user" and getattr(downloader, "channel_id", None):
+                await database.update_channel_last_sync(downloader.channel_id)
 
         if progress_reporter:
             if result:
                 progress_reporter.advance_step(
-                    "收尾",
-                    f"成功 {result.success} / 失败 {result.failed} / 跳过 {result.skipped}",
+                    "Finishing",
+                    f"Success {result.success} / Failed {result.failed} / Skipped {result.skipped}",
                 )
             else:
-                progress_reporter.advance_step("收尾", "无可统计结果")
+                progress_reporter.advance_step("Finishing", "No results to summarize")
 
         return result
 
@@ -221,6 +278,11 @@ async def main_async(args):
     if args.serve:
         await _run_serve_subcommand(args, config)
         return
+    if args.scheduler:
+        from cli.channel_scheduler import run_channel_scheduler
+
+        await run_channel_scheduler(args, config)
+        return
 
     if args.url:
         urls = args.url if isinstance(args.url, list) else [args.url]
@@ -244,12 +306,26 @@ async def main_async(args):
 
     database = None
     if config.get("database"):
-        db_path = config.get("database_path", "dy_downloader.db") or "dy_downloader.db"
-        database = Database(db_path=str(db_path))
+        database = create_database(config.config)
         await database.initialize()
+        await database.sync_channels_from_urls(config.get_links())
         display.print_success("Database initialized")
 
     urls = config.get_links()
+    if database:
+        urls = await database.resolve_download_urls(urls)
+    if not urls:
+        display.print_error(
+            "No URLs to download. Add links to config.yml or insert enabled=1 channels "
+            "into the channels table (database)."
+        )
+        if database is not None:
+            await database.close()
+        return
+    if len(urls) > 1:
+        display.print_warning(
+            f"{len(urls)} channel(s) — sequential download with global lock (one channel at a time)"
+        )
     display.print_info(f"Found {len(urls)} URL(s) to process")
 
     all_results = []
@@ -258,7 +334,7 @@ async def main_async(args):
     quiet_progress_logs = quiet_by_config and not (args.verbose or args.show_warnings)
     if quiet_progress_logs:
         # Progress 运行期间若有大量错误日志会触发 rich 反复重绘，导致屏幕出现重复块。
-        # 默认静默控制台日志，下载完成后再恢复。
+        # 默认静默控制台日志，after download completes。
         set_console_log_level(logging.CRITICAL)
 
     display.start_download_session(len(urls))
@@ -281,7 +357,7 @@ async def main_async(args):
                 all_results.append(result)
                 display.complete_url(result)
             else:
-                display.fail_url("下载失败或链接无效")
+                display.fail_url("Download failed or invalid link")
     finally:
         display.stop_download_session()
         if database is not None:
@@ -304,7 +380,7 @@ async def main_async(args):
 
         await _dispatch_notifications(config, total_result, len(urls))
     else:
-        # 所有链接都失败时，也发通知（若启用）
+        # When all links fail，也发通知（若启用）
         await _dispatch_notifications(config, None, len(urls))
 
 
@@ -318,18 +394,18 @@ async def _run_discovery_subcommand(
 
     async with DouyinAPIClient(cookie_manager.get_cookies()) as api_client:
         if args.hot_board is not None:
-            display.print_info("拉取抖音热搜榜...")
+            display.print_info("Fetching Douyin hot search board…")
             result = await dump_hot_board(api_client, base_path, limit=int(args.hot_board or 0))
-            display.print_success(f"热榜已保存：{result['count']} 条 -> {result['path']}")
+            display.print_success(f"Hot board saved: {result['count']} entries -> {result['path']}")
         if args.search:
-            display.print_info(f"搜索关键词：{args.search}")
+            display.print_info(f"Search keyword: {args.search}")
             result = await search_and_dump(
                 api_client,
                 args.search,
                 base_path,
                 max_items=int(args.search_max or 50),
             )
-            display.print_success(f"搜索结果已保存：{result['count']} 条 -> {result['path']}")
+            display.print_success(f"Search results saved: {result['count']} entries -> {result['path']}")
 
 
 async def _run_serve_subcommand(args, config: ConfigLoader) -> None:
@@ -338,12 +414,12 @@ async def _run_serve_subcommand(args, config: ConfigLoader) -> None:
         from server.app import run_server
     except ImportError as exc:
         display.print_error(
-            f"REST 服务模式需要安装可选依赖 fastapi + uvicorn："
-            f"\n  pip install fastapi uvicorn\n原始错误：{exc}"
+            f"REST server mode requires optional dependencies fastapi + uvicorn:"
+            f"\n  pip install fastapi uvicorn\nOriginal error: {exc}"
         )
         return
 
-    display.print_info(f"启动 REST 服务：http://{args.serve_host}:{args.serve_port}")
+    display.print_info(f"Starting REST server: http://{args.serve_host}:{args.serve_port}")
     await run_server(config, host=args.serve_host, port=args.serve_port)
 
 
@@ -353,17 +429,17 @@ async def _dispatch_notifications(config: ConfigLoader, total_result: Any, url_c
         return
 
     if total_result is None:
-        title = "抖音下载器：全部失败"
-        body = f"共处理 {url_count} 个链接，无成功结果"
+        title = "Douyin Downloader: all failed"
+        body = f"Processed {url_count} link(s); no successful results"
         level = "failure"
     else:
         fail_or_partial = total_result.failed > 0 or total_result.success == 0
         level = "failure" if fail_or_partial else "success"
-        title = "抖音下载完成" if level == "success" else "抖音下载部分失败"
+        title = "Douyin download complete" if level == "success" else "Douyin download partially failed"
         body = (
-            f"链接 {url_count} / 总作品 {total_result.total} / "
-            f"成功 {total_result.success} / 失败 {total_result.failed} / "
-            f"跳过 {total_result.skipped}"
+            f"Links {url_count} / Total items {total_result.total} / "
+            f"Success {total_result.success} / Failed {total_result.failed} / "
+            f"Skipped {total_result.skipped}"
         )
 
     try:
@@ -375,12 +451,12 @@ async def _dispatch_notifications(config: ConfigLoader, total_result: Any, url_c
                 len(summary),
                 succ,
             )
-    except Exception as exc:  # 通知失败不应影响主流程
+    except Exception as exc:  # Notification failures must not affect main flow
         logger.warning("Notification dispatch error: %s", exc)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Douyin Downloader - 抖音批量下载工具")
+    parser = argparse.ArgumentParser(description="Douyin Downloader - batch download tool")
     parser.add_argument("-u", "--url", action="append", help="Download URL(s)")
     parser.add_argument("-c", "--config", help="Config file path (default: config.yml)")
     parser.add_argument("-p", "--path", help="Save path")
@@ -394,28 +470,44 @@ def main():
         const=0,
         default=None,
         metavar="N",
-        help="拉取抖音热搜榜并导出 JSONL，可选上限 N（默认全部）",
+        help="Fetch Douyin hot board and export JSONL; optional limit N (default: all)",
     )
     parser.add_argument(
         "--search",
         type=str,
         default=None,
         metavar="KEYWORD",
-        help="按关键词搜索作品并导出 JSONL",
+        help="Search posts by keyword and export JSONL",
     )
     parser.add_argument(
         "--search-max",
         type=int,
         default=50,
-        help="--search 场景下最多拉取条数（默认 50）",
+        help="Max items to fetch for --search (default 50)",
     )
     parser.add_argument(
         "--serve",
         action="store_true",
-        help="以 REST API 服务模式运行（需要安装 fastapi + uvicorn）",
+        help="Run in REST API server mode (requires fastapi + uvicorn)",
     )
-    parser.add_argument("--serve-host", type=str, default="127.0.0.1", help="REST 服务监听地址")
-    parser.add_argument("--serve-port", type=int, default=8000, help="REST 服务监听端口")
+    parser.add_argument("--serve-host", type=str, default="127.0.0.1", help="REST server listen address")
+    parser.add_argument("--serve-port", type=int, default=8000, help="REST server listen port")
+    parser.add_argument(
+        "--scheduler",
+        action="store_true",
+        help="Run channel scheduler (default: every 10 minutes, 1 channel per tick)",
+    )
+    parser.add_argument(
+        "--scheduler-interval",
+        type=int,
+        default=None,
+        help="Scheduler interval in seconds (minimum 60)",
+    )
+    parser.add_argument(
+        "--scheduler-once",
+        action="store_true",
+        help="Run scheduler once then exit",
+    )
     try:
         from __init__ import __version__
     except ImportError:

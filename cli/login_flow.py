@@ -39,22 +39,22 @@ async def interactive_relogin(
 ) -> Optional[dict]:
     """Open a browser, guide login, capture cookies. Returns fresh cookies or None."""
     print(
-        "\n[登录态已失效] 抖音要求重新登录。即将打开浏览器，请完成抖音登录，"
-        "登录成功后回到本终端按 Enter。\n"
+        "\n[Session expired] Douyin requires re-login. A browser will open; complete Douyin login,"
+        "then return here and press Enter.\n"
     )
     try:
         rc = await fetch_cookies(output=cookies_path)
     except Exception as exc:  # noqa: BLE001 — surface, don't crash the run
         logger.error("Interactive relogin failed to launch: %s", exc)
         print(
-            "[ERROR] 无法启动登录流程。请确认已安装 Playwright："
+            "[ERROR] Could not start login flow. Ensure Playwright is installed:"
             "\n  pip install playwright && playwright install chromium"
-            "\n或手动更新 config/cookies.json 后重试。"
+            "\nOr manually update config/cookies.json and retry."
         )
         return None
 
     if rc != 0:
-        print("[ERROR] 登录流程未成功完成，已中止。")
+        print("[ERROR] Login flow did not complete successfully; aborted.")
         return None
 
     try:
@@ -65,6 +65,6 @@ async def interactive_relogin(
 
     cookies = sanitize_cookies(raw if isinstance(raw, dict) else {})
     if not cookies.get("sessionid"):
-        print("[ERROR] 登录后未获取到有效会话（缺少 sessionid），请重试。")
+        print("[ERROR] No valid session after login (missing sessionid); please retry.")
         return None
     return cookies

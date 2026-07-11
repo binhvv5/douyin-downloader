@@ -1,11 +1,11 @@
-"""抖音直播录制。
+"""抖音Live stream recording。
 
 技术路径：
 - 通过 `/webcast/room/web/enter/` 获取 stream_url，常见字段：
     * flv_pull_url: {SD, HD, FULL_HD, ORIGIN}
     * hls_pull_url_map: {HD1, HD2, HD3}
 - 选择最高清可用的流，优先 FLV（单文件落盘简单）
-- 使用 aiohttp 分块写入到 `.flv` 临时文件，完成后原子重命名
+- 使用 aiohttp 分块写入到 `.flv` 临时文件，Done后原子重命名
 - 时长限制：read_timeout 自然结束或 max_duration_seconds 触发
 - 不依赖 ffmpeg；若用户需要转码可后处理
 
@@ -63,8 +63,8 @@ class LiveDownloader(BaseDownloader):
             return result
 
         result.total = 1
-        self._progress_set_item_total(1, "直播录制")
-        self._progress_update_step("获取直播间信息", f"room_id={room_id}")
+        self._progress_set_item_total(1, "Live stream recording")
+        self._progress_update_step("Fetching live room info", f"room_id={room_id}")
 
         info = await self.api_client.get_live_room_info(str(room_id))
         if not info:
@@ -78,7 +78,7 @@ class LiveDownloader(BaseDownloader):
 
         status = room.get("status")
         if status is not None and int(status or 0) != 2:
-            # 2 = 正在直播；其他状态不录
+            # 2 = 正在Live stream；其他状态不录
             logger.warning("Room %s not live (status=%s); skipping", room_id, status)
             result.skipped += 1
             self._progress_advance_item("skipped", str(room_id))
@@ -92,10 +92,10 @@ class LiveDownloader(BaseDownloader):
             return result
 
         author_name = (user.get("nickname") or "unknown").strip() or "unknown"
-        title = (room.get("title") or "直播").strip() or "直播"
+        title = (room.get("title") or "Live stream").strip() or "Live stream"
         save_dir, file_stem = self._plan_output_paths(author_name, title, str(room_id))
 
-        # 保存元数据
+        # Saving元数据
         meta_path = save_dir / f"{file_stem}_room.json"
         try:
             async with aiofiles.open(meta_path, "w", encoding="utf-8") as f:
@@ -110,8 +110,8 @@ class LiveDownloader(BaseDownloader):
             # HLS 源只会下载 playlist（m3u8 文本），不是可直接播放的视频文件。
             # 告知用户正确的后处理方式。
             logger.warning(
-                "选中的直播源为 HLS（m3u8 playlist），保存的将是播放列表文本而非视频。"
-                "如需可播放文件，请用 ffmpeg 基于该 URL 抓流：ffmpeg -i '%s' -c copy out.ts",
+                "Selected live source is HLS (m3u8 playlist); saved file will be playlist text, not video."
+                "For a playable file, use ffmpeg to capture from this URL: ffmpeg -i '%s' -c copy out.ts",
                 stream_url,
             )
 
@@ -121,7 +121,7 @@ class LiveDownloader(BaseDownloader):
         idle_timeout = float(live_cfg.get("idle_timeout_seconds") or 30.0)
 
         self._progress_update_step(
-            "录制直播流",
+            "Recording live stream",
             f"quality={quality} | -> {target_path.name}",
         )
 
@@ -233,7 +233,7 @@ class LiveDownloader(BaseDownloader):
         """从 url 拉取字节流写入 target_path，直到流结束 / 超时 / 达到 max_duration。
 
         **数据保留策略**：主播下播、网络空闲、payload 截断等场景下，只要已经写入
-        > 0 字节，就把 .tmp 提升为正式文件（录到一半的直播也比零字节有用）。
+        > 0 字节，就把 .tmp 提升为正式文件（录到一半的Live stream也比零字节有用）。
         仅 HTTP 4xx / 从未开始写入的情况下才会丢弃。
         """
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -242,7 +242,7 @@ class LiveDownloader(BaseDownloader):
         bytes_written = 0
         last_chunk_ts = start
 
-        # 直播 CDN 常同时校验 Referer 与 Origin 为 live.douyin.com（不是 www.douyin.com）。
+        # Live stream CDN 常同时校验 Referer 与 Origin 为 live.douyin.com（不是 www.douyin.com）。
         headers = self._download_headers()
         headers["Referer"] = "https://live.douyin.com/"
         headers["Origin"] = "https://live.douyin.com"
@@ -258,7 +258,7 @@ class LiveDownloader(BaseDownloader):
             try:
                 os.replace(str(tmp_path), str(target_path))
             except Exception as exc:
-                # 捕获所有异常：理论上只会是 OSError，但 rename 失败时宁可多兜底也别泄漏。
+                # 捕获所有异常：理论上只会是 OSError，但 rename Failed时宁可多兜底也别泄漏。
                 logger.error("Live tmp → final rename failed: %s", exc)
                 return False
             logger.info(
@@ -300,7 +300,7 @@ class LiveDownloader(BaseDownloader):
             _promote_if_nonempty("cancelled")
             raise
         except aiohttp.ClientPayloadError as exc:
-            # 直播中断（主播下播）常见表现，视为正常结束
+            # Live stream中断（主播下播）常见表现，视为正常结束
             logger.info("Live payload ended: %s", exc)
             return _promote_if_nonempty("payload ended")
         except (asyncio.TimeoutError, aiohttp.ServerTimeoutError) as exc:

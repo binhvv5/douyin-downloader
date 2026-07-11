@@ -25,7 +25,7 @@ logger = setup_logger("AudioExtraction")
 
 
 class AudioExtractError(Exception):
-    """所有抽音失败的基类。
+    """所有抽音Failed的基类。
 
     ``str(exc)`` 总以 ``audio_extract_failed: <cause>`` 开头，与
     requirements R6.2 / R6.3 字面契约一致；上层
@@ -41,7 +41,7 @@ class AudioExtractError(Exception):
 
 class FfmpegNotAvailable(AudioExtractError):
     """``imageio_ffmpeg.get_ffmpeg_exe()`` 找不到二进制、或 ``ffmpeg
-    -version`` 探测失败。"""
+    -version`` 探测Failed。"""
 
     cause = "ffmpeg_not_available"
 
@@ -120,7 +120,7 @@ class FfmpegLocator:
 
         Raises:
             FfmpegNotAvailable: 缓存中没有可用 ffmpeg 时（路径找不到、
-                ``-version`` 探测失败、平台不支持等）。
+                ``-version`` 探测Failed、平台不支持等）。
         """
         async with self._lock:
             await self._refresh_if_needed()
@@ -263,7 +263,7 @@ async def extract_audio(
 ) -> Path:
     """把 ``video_path`` 抽成 ``<stem>.mp3``，写到 ``output_dir`` 并返回路径。
 
-    成功条件：
+    Success条件：
     - ffmpeg 在 :data:`_FFMPEG_TIMEOUT_SECONDS` 内退出
     - 退出码 0
     - 输出文件大小严格大于 0 字节
