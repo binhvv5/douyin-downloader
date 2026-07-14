@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 from storage.db_connection import DbConnection, open_mysql, open_sqlite
 from storage.pipeline_handoff import build_asset_entries, find_local_source_mp4
+from utils.path_mapping import map_to_path2
 
 
 def create_database(config: Dict[str, Any]) -> "Database":
@@ -172,6 +173,7 @@ class Database:
         await self._ensure_aweme_translation_columns(db, engine="sqlite")
         await self._ensure_aweme_pipeline_columns(db, engine="sqlite")
         await self._initialize_pipeline_tables(db, engine="sqlite")
+        await self._ensure_file_path2_columns(db, engine="sqlite")
 
         await db.commit()
 
@@ -284,6 +286,7 @@ class Database:
         await self._ensure_aweme_translation_columns(db, engine="mysql")
         await self._ensure_aweme_pipeline_columns(db, engine="mysql")
         await self._initialize_pipeline_tables(db, engine="mysql")
+        await self._ensure_file_path2_columns(db, engine="mysql")
 
         await db.commit()
 
@@ -345,6 +348,29 @@ class Database:
         for column, col_type in columns.items():
             if column not in existing_columns:
                 await db.execute(f"ALTER TABLE aweme ADD COLUMN {column} {col_type}")
+
+    async def _ensure_file_path2_columns(self, db: DbConnection, *, engine: str) -> None:
+        aweme_column = "file_path2"
+        video_assets_column = "file_path2"
+        if engine == "mysql":
+            db_name = str(self.mysql_config.get("database") or "douyin_downloader")
+            for table, column in (("aweme", aweme_column), ("video_assets", video_assets_column)):
+                cursor = await db.execute(
+                    """
+                    SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s AND COLUMN_NAME = %s
+                    """,
+                    (db_name, table, column),
+                )
+                if not await cursor.fetchone():
+                    await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT NULL")
+            return
+
+        for table, column in (("aweme", aweme_column), ("video_assets", video_assets_column)):
+            cursor = await db.execute(f"PRAGMA table_info({table})")
+            existing_columns = {row[1] for row in await cursor.fetchall()}
+            if column not in existing_columns:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
 
     async def _initialize_pipeline_tables(self, db: DbConnection, *, engine: str) -> None:
         if engine == "mysql":
@@ -586,10 +612,10 @@ class Database:
     def _upsert_aweme_sql(self) -> str:
         cols = (
             "aweme_id, aweme_type, channel_id, title, author_id, author_name, author_sec_uid, "
-            "create_time, download_time, download_status, file_path, metadata, "
+            "create_time, download_time, download_status, file_path, file_path2, metadata, "
             "title_vi, description_vi, tags_vi"
         )
-        values = self._placeholder(15)
+        values = self._placeholder(16)
         if self.engine == "mysql":
             return f"""
                 INSERT INTO aweme ({cols}) VALUES ({values})
@@ -604,6 +630,7 @@ class Database:
                     download_time=VALUES(download_time),
                     download_status=VALUES(download_status),
                     file_path=VALUES(file_path),
+                    file_path2=VALUES(file_path2),
                     metadata=VALUES(metadata),
                     title_vi=VALUES(title_vi),
                     description_vi=VALUES(description_vi),
@@ -632,6 +659,7 @@ class Database:
             ts,
             aweme_data.get("download_status") or "success",
             aweme_data.get("file_path"),
+            aweme_data.get("file_path2"),
             aweme_data.get("metadata"),
             aweme_data.get("title_vi"),
             aweme_data.get("description_vi"),
@@ -1269,15 +1297,17 @@ class Database:
         file_size: Optional[int] = None,
         mime_type: Optional[str] = None,
         checksum: Optional[str] = None,
+        file_path2: Optional[str] = None,
     ) -> None:
         db = await self._get_conn()
         if self.engine == "mysql":
             sql = f"""
                 INSERT INTO video_assets
-                (aweme_id, asset_type, file_path, file_size, checksum, mime_type)
-                VALUES ({self._placeholder(6)})
+                (aweme_id, asset_type, file_path, file_path2, file_size, checksum, mime_type)
+                VALUES ({self._placeholder(7)})
                 ON DUPLICATE KEY UPDATE
                     file_path=VALUES(file_path),
+                    file_path2=VALUES(file_path2),
                     file_size=VALUES(file_size),
                     checksum=VALUES(checksum),
                     mime_type=VALUES(mime_type)
@@ -1285,17 +1315,18 @@ class Database:
         else:
             sql = f"""
                 INSERT INTO video_assets
-                (aweme_id, asset_type, file_path, file_size, checksum, mime_type)
-                VALUES ({self._placeholder(6)})
+                (aweme_id, asset_type, file_path, file_path2, file_size, checksum, mime_type)
+                VALUES ({self._placeholder(7)})
                 ON CONFLICT(aweme_id, asset_type) DO UPDATE SET
                     file_path = excluded.file_path,
+                    file_path2 = excluded.file_path2,
                     file_size = excluded.file_size,
                     checksum = excluded.checksum,
                     mime_type = excluded.mime_type
             """
         await db.execute(
             sql,
-            (aweme_id, asset_type, file_path, file_size, checksum, mime_type),
+            (aweme_id, asset_type, file_path, file_path2, file_size, checksum, mime_type),
         )
 
     async def get_pipeline_job_status(self, aweme_id: str, stage: str) -> Optional[str]:
@@ -1373,12 +1404,20 @@ class Database:
         self,
         aweme_id: str,
         downloaded_files: Sequence[Union[Path, str]],
+        *,
+        base_path: Optional[Union[Path, str]] = None,
+        path2: Optional[Union[Path, str]] = None,
     ) -> None:
-        for entry in build_asset_entries([Path(p) for p in downloaded_files]):
+        for entry in build_asset_entries(
+            [Path(p) for p in downloaded_files],
+            base_path=base_path,
+            path2=path2,
+        ):
             await self.upsert_video_asset(
                 aweme_id=aweme_id,
                 asset_type=entry["asset_type"],
                 file_path=entry["file_path"],
+                file_path2=entry.get("file_path2"),
                 file_size=entry.get("file_size"),
                 mime_type=entry.get("mime_type"),
             )
@@ -1393,9 +1432,16 @@ class Database:
         translation_enabled: bool,
         download_status: str = "success",
         commit: bool = True,
+        base_path: Optional[Union[Path, str]] = None,
+        path2: Optional[Union[Path, str]] = None,
     ) -> None:
         db = await self._get_conn()
-        await self._upsert_video_assets_from_files(aweme_id, downloaded_files)
+        await self._upsert_video_assets_from_files(
+            aweme_id,
+            downloaded_files,
+            base_path=base_path,
+            path2=path2,
+        )
         await self.upsert_pipeline_job(
             aweme_id=aweme_id,
             stage="download",
@@ -1424,15 +1470,18 @@ class Database:
         aweme_id: str,
         channel_id: Optional[int],
         base_path: Union[Path, str],
+        path2: Optional[Union[Path, str]] = None,
         commit: bool = True,
     ) -> None:
         db = await self._get_conn()
         source_mp4 = find_local_source_mp4(Path(base_path), aweme_id)
         if source_mp4:
+            file_path2 = map_to_path2(source_mp4, base_path, path2) if path2 else None
             await self.upsert_video_asset(
                 aweme_id=aweme_id,
                 asset_type="source_mp4",
                 file_path=str(source_mp4),
+                file_path2=file_path2,
                 file_size=source_mp4.stat().st_size,
                 mime_type="video/mp4",
             )

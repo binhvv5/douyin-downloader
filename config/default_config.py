@@ -1,7 +1,8 @@
 from typing import Any, Dict
 
 DEFAULT_CONFIG: Dict[str, Any] = {
-    "path": "./Downloaded/",
+    "path": "/home/trung/Documents/linux-share/out",
+    "path2": "",
     "music": True,
     "cover": True,
     "avatar": True,

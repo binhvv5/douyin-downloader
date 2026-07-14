@@ -21,6 +21,7 @@ from utils.naming import (
     build_aweme_context,
     render_template,
 )
+from utils.path_mapping import map_to_path2
 
 logger = setup_logger("BaseDownloader")
 
@@ -464,6 +465,7 @@ class BaseDownloader(ABC):
                 "author_name": author.get("nickname", author_name),
                 "create_time": aweme_data.get("create_time"),
                 "file_path": str(save_dir),
+                "file_path2": self._resolve_path2(save_dir),
                 "metadata": metadata_json,
                 "title_vi": title_vi,
                 "description_vi": description_vi,
@@ -485,6 +487,8 @@ class BaseDownloader(ABC):
                 metadata_translate_ok=metadata_translate_ok,
                 translation_enabled=bool(translation_cfg.get("enabled")),
                 download_status="success",
+                base_path=self.file_manager.base_path,
+                path2=self.config.get("path2"),
             )
 
         manifest_record = {
@@ -1009,3 +1013,10 @@ class BaseDownloader(ABC):
             return str(path.relative_to(self.file_manager.base_path))
         except ValueError:
             return str(path)
+
+    def _resolve_path2(self, local_path: Path) -> Optional[str]:
+        path2 = self.config.get("path2")
+        if not path2:
+            return None
+        base_path = self.config.get("path") or self.file_manager.base_path
+        return map_to_path2(local_path, base_path, path2)

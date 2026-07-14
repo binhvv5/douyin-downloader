@@ -161,6 +161,7 @@ class MusicDownloader(BaseDownloader):
                     "author_name": author_name,
                     "create_time": None,
                     "file_path": str(save_dir),
+                    "file_path2": self._resolve_path2(save_dir),
                     "metadata": json.dumps(detail or {}, ensure_ascii=False),
                 },
                 author_sec_uid=extract_author_sec_uid(detail),

@@ -238,6 +238,7 @@ class UserDownloader(BaseDownloader):
                         aweme_id=str(aweme_id),
                         channel_id=self.channel_id,
                         base_path=self.file_manager.base_path,
+                        path2=self.config.get("path2"),
                     )
                 self._progress_advance_item("skipped", str(aweme_id or "unknown"))
                 return {"status": "skipped", "aweme_id": aweme_id}

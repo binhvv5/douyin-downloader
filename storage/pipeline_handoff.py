@@ -1,7 +1,8 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from utils.logger import setup_logger
+from utils.path_mapping import map_to_path2
 
 logger = setup_logger("PipelineHandoff")
 
@@ -51,9 +52,15 @@ def find_local_source_mp4(base_path: Path, aweme_id: str) -> Optional[Path]:
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
 
-def build_asset_entries(downloaded_files: List[Path]) -> List[Dict[str, Any]]:
+def build_asset_entries(
+    downloaded_files: List[Path],
+    base_path: Optional[Union[Path, str]] = None,
+    path2: Optional[Union[Path, str]] = None,
+) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
     seen_types: set = set()
+    base = Path(base_path).resolve() if base_path else None
+    path2_str = str(path2).strip() if path2 else ""
     for raw_path in downloaded_files:
         path = Path(raw_path).resolve()
         asset_type = classify_downloaded_file(path)
@@ -74,12 +81,15 @@ def build_asset_entries(downloaded_files: List[Path]) -> List[Dict[str, Any]]:
             mime_type = "audio/mpeg"
         elif asset_type == "metadata_json":
             mime_type = "application/json"
-        entries.append(
-            {
-                "asset_type": asset_type,
-                "file_path": str(path),
-                "file_size": file_size,
-                "mime_type": mime_type,
-            }
-        )
+        entry: Dict[str, Any] = {
+            "asset_type": asset_type,
+            "file_path": str(path),
+            "file_size": file_size,
+            "mime_type": mime_type,
+        }
+        if base is not None and path2_str:
+            mapped = map_to_path2(path, base, path2_str)
+            if mapped:
+                entry["file_path2"] = mapped
+        entries.append(entry)
     return entries

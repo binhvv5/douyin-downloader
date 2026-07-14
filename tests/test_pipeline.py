@@ -23,6 +23,7 @@ async def test_pipeline_handoff_after_download(tmp_path):
     meta = tmp_path / "2024-01-01_1234567890123456789_data.json"
     meta.write_text("{}", encoding="utf-8")
 
+    path2_root = r"D:\share\out"
     await database.add_aweme(
         {
             "aweme_id": "1234567890123456789",
@@ -33,6 +34,7 @@ async def test_pipeline_handoff_after_download(tmp_path):
             "author_name": "Author",
             "create_time": 1700000000,
             "file_path": str(tmp_path),
+            "file_path2": str(Path(path2_root) / tmp_path.name),
             "metadata": json.dumps({"a": 1}, ensure_ascii=False),
             "download_status": "success",
         }
@@ -44,6 +46,8 @@ async def test_pipeline_handoff_after_download(tmp_path):
         metadata_translate_ok=True,
         translation_enabled=True,
         download_status="success",
+        base_path=tmp_path,
+        path2=path2_root,
     )
 
     assert await database.get_pipeline_job_status("1234567890123456789", "download") == "success"
@@ -55,12 +59,22 @@ async def test_pipeline_handoff_after_download(tmp_path):
 
     db = await database._get_conn()
     cursor = await db.execute(
-        "SELECT asset_type, file_path FROM video_assets WHERE aweme_id = ?",
+        "SELECT asset_type, file_path, file_path2 FROM video_assets WHERE aweme_id = ?",
         ("1234567890123456789",),
     )
-    assets = {row[0]: row[1] for row in await cursor.fetchall()}
+    assets = {row[0]: {"file_path": row[1], "file_path2": row[2]} for row in await cursor.fetchall()}
     assert "source_mp4" in assets
     assert "metadata_json" in assets
+    assert assets["source_mp4"]["file_path2"] == str(Path(path2_root) / mp4.name)
+    assert assets["metadata_json"]["file_path2"] == str(Path(path2_root) / meta.name)
+
+    cursor = await db.execute(
+        "SELECT file_path2 FROM aweme WHERE aweme_id = ?",
+        ("1234567890123456789",),
+    )
+    aweme_row = await cursor.fetchone()
+    assert aweme_row is not None
+    assert aweme_row[0] == str(Path(path2_root) / tmp_path.name)
 
     await database.close()
 

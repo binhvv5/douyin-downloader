@@ -1,5 +1,50 @@
 # Douyin Downloader V2.0
 
+## How to run
+1. Vào thư mục và kích hoạt môi trường
+Project đã có sẵn virtualenv .venv:
+
+cd /home/trung/Documents/prj/douyin/douyin-downloader
+source .venv/bin/activate
+Nếu chưa cài dependency:
+
+pip install -r requirements.txt
+(Tùy chọn — để login cookie tự động / fallback trình duyệt)
+
+pip install playwright
+python -m playwright install chromium
+2. Cấu hình
+Bạn đã có config.yml. Nếu chưa có thì copy từ mẫu:
+
+cp config.example.yml config.yml
+Chỉnh các mục quan trọng:
+
+link: URL video/user cần tải
+path: thư mục lưu (hiện tại là ../Downloaded/)
+cookies: cookie Douyin (bắt buộc cho hầu hết tác vụ)
+Lấy cookie tự động:
+
+python -m tools.cookie_fetcher --config config.yml
+Đăng nhập Douyin trong trình duyệt, quay lại terminal và nhấn Enter.
+
+3. Chạy download
+Theo file config:
+
+python run.py -c config.yml
+Tải một URL cụ thể (không cần sửa config):
+
+python run.py -c config.yml -u "https://www.douyin.com/video/7604129988555574538"
+Chạy REST API server:
+
+pip install fastapi uvicorn
+python run.py --serve --serve-port 8000
+Chạy scheduler (tự động sync kênh theo lịch):
+
+python run.py --scheduler
+Chạy một lần rồi thoát:
+
+python run.py --scheduler --scheduler-once
+
 <p align="center">
   <img src="https://socialify.git.ci/jiji262/douyin-downloader/image?custom_description=Douyin+batch+download+tool%2C+remove+watermarks%2C+support+batch+download+of+videos%2C+gallery%2C+and+author+homepages.&description=1&font=Source+Code+Pro&forks=1&owner=1&pattern=Circuit+Board&stargazers=1&theme=Light" alt="douyin-downloader" width="820" />
 </p>
