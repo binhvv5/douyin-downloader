@@ -232,7 +232,7 @@ class FfmpegLocator:
 # ---------------------------------------------------------------------------
 
 
-_FFMPEG_TIMEOUT_SECONDS = 600.0
+_FFMPEG_TIMEOUT_SECONDS = 3600.0
 """ffmpeg 抽音子进程硬超时（requirements R1.10 / R1.11）。"""
 
 _STDERR_RING_LIMIT_BYTES = 1 * 1024 * 1024
@@ -270,7 +270,7 @@ async def extract_audio(
 
     Raises:
         FfmpegNotAvailable: ffmpeg 二进制不可用（``locate()`` 抛出）。
-        FfmpegTimeout: 子进程 600 秒未结束。
+        FfmpegTimeout: 子进程 3600 秒未结束。
         FfmpegNonZeroExit: 子进程非零退出。
         AudioExtractEmpty: 子进程退出码 0，但输出文件不存在或为 0 字节。
     """

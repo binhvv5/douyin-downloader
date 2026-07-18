@@ -383,7 +383,7 @@ class TranscriptManager:
                 filename=filename,
                 content_type=content_type,
             )
-            timeout = aiohttp.ClientTimeout(total=600)
+            timeout = aiohttp.ClientTimeout(total=1800)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     api_url,
