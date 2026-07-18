@@ -1,0 +1,138 @@
+link: [https://www.douyin.com/user/MS4wLjABAAAA7CNii-RBUmeBiKaRwRPfUmycSyDEjRqRUswHaxag-ig8nkdy4hyZiXm4AbD_BnHx]
+
+path: "/home/trung/Documents/linux-share/out"
+path2: "C:\\Users\\TrungBaNguyen\\OneDrive - Fortna Inc\\Documents\\vm-share\\out"
+
+music: true
+cover: true
+avatar: true
+json: true
+
+start_time: ""
+end_time: ""
+
+folderstyle: true
+
+# File/folder naming templates. Variables:
+#   {id} {title} {author} {author_id} {date} {year} {month} {day}
+#   {time} {timestamp} {type} {mode}
+# Template must include {id} to avoid filename collisions.
+filename_template: "{date}_{title}_{id}"
+folder_template: "{date}_{title}_{id}"
+
+# Author directory naming:
+#   nickname     - nickname only (default; intuitive but renames can split folders)
+#   sec_uid      - author sec_uid (stable unique ID)
+#   nickname_uid - nickname_sec_uid (readable + unique)
+# Changes apply to new downloads only; existing folders are not migrated.
+author_dir: "nickname"
+
+# Do not download pinned posts from user profile unless set to true
+download_pinned: false
+
+mode:
+  - post
+
+media_types:
+  - video
+
+number:
+  post: 10
+  like: 0
+  allmix: 0
+  mix: 0
+  music: 0
+  collect: 0
+  collectmix: 0
+
+increase:
+  post: false
+  like: false
+  allmix: false
+  mix: false
+  music: false
+
+thread: 5
+retry_times: 3
+proxy: ""
+database: true
+database_engine: mysql
+database_mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: douyin
+  password: douyin
+  database: douyin_downloader
+
+progress:
+  quiet_logs: true
+
+transcript:
+  enabled: true
+  model: whisper-large-v3-turbo
+  output_dir: ""
+  response_formats:
+    - txt
+    - json
+  timestamps: true          # true: JSON output as [{start, end, text}]; false: raw API payload
+  api_url: https://api.groq.com/openai/v1/audio/transcriptions
+  api_key_env: GROQ_API_KEY
+  api_key: ""
+  upload_audio_only: true
+
+browser_fallback:
+  enabled: true
+  headless: false
+  max_scrolls: 240
+  idle_rounds: 8
+  wait_timeout_seconds: 600
+
+# Optional comment collection: writes *_comments.json per post when enabled
+comments:
+  enabled: false
+  include_replies: false
+  max_comments: 0   # 0 = unlimited
+  page_size: 20
+
+# Live recording: used when link points to live.douyin.com/{room_id} or /follow/live/{room_id}
+live:
+  max_duration_seconds: 0   # 0 = record until stream ends
+  chunk_size: 65536
+  idle_timeout_seconds: 30
+
+# Optional download notifications (bark / telegram / webhook)
+notifications:
+  enabled: false
+  on_success: true
+  on_failure: true
+  providers: []
+  # Example:
+  # providers:
+  #   - type: bark
+  #     url: https://api.day.app/YOUR_DEVICE_KEY
+  #     sound: bell
+  #   - type: telegram
+  #     bot_token: "123456:ABC..."
+  #     chat_id: "987654321"
+  #   - type: webhook
+  #     url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+  #     extra_body:
+  #       msgtype: text
+
+# REST API server mode (optional; requires fastapi + uvicorn)
+server:
+  max_jobs: 500
+  job_ttl_seconds: 86400   # keep finished jobs for 24 hours
+
+scheduler:
+  interval_seconds: 600      # scan channels every 10 minutes
+  lock_timeout_seconds: 0    # 0 = skip tick if another download is in progress
+  run_once: false
+
+cookie: auto
+
+translation:
+  enabled: true
+  model: gpt-4o-mini
+  api_url: https://api.openai.com/v1/chat/completions
+  api_key_env: OPENAI_API_KEY
