@@ -8,6 +8,8 @@ Project đã có sẵn virtualenv .venv:
 
 cd /home/trung/Documents/prj/douyin/douyin-downloader
 source .venv/bin/activate
+
+$ source .venv/Scripts/activate
 Nếu chưa cài dependency:
 
 tren windows thi chay:   
