@@ -2,64 +2,113 @@
 
 ## How to run
 
-1. Vào thư mục và kích hoạt môi trường
+### 1. Vào thư mục và kích hoạt môi trường
 
-Project đã có sẵn virtualenv .venv:
+```bash
+cd douyin-downloader
+```
 
-cd /home/trung/Documents/prj/douyin/douyin-downloader
-source .venv/bin/activate
+Tạo virtualenv (nếu chưa có) và cài dependency:
 
-$ source .venv/Scripts/activate
-Nếu chưa cài dependency:
+**Windows — Git Bash**
 
-tren windows thi chay:   
+```bash
 python -m venv .venv
+source .venv/Scripts/activate
+pip install -r requirements.txt
+```
 
+**Windows — Git CMD / CMD**
+
+```cmd
+python -m venv .venv
 .venv\Scripts\activate.bat
-
 pip install -r requirements.txt
+```
 
+**Windows — PowerShell**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+```
+
+**Linux / macOS**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 (Tùy chọn — để login cookie tự động / fallback trình duyệt)
 
+```bash
 pip install playwright
 python -m playwright install chromium
-2. Cấu hình
-Bạn đã có config.yml. Nếu chưa có thì copy từ mẫu:
+```
 
+### 2. Cấu hình
+
+Nếu chưa có `config.yml` thì copy từ mẫu:
+
+```bash
 cp config.example.yml config.yml
+```
+
+Trên Windows CMD:
+
+```cmd
+copy config.example.yml config.yml
+```
+
 Chỉnh các mục quan trọng:
 
-link: URL video/user cần tải
-path: thư mục lưu (hiện tại là ../Downloaded/)
-cookies: cookie Douyin (bắt buộc cho hầu hết tác vụ)
+- `link`: URL video/user cần tải
+- `path`: thư mục lưu (ví dụ `../Downloaded/`)
+- `cookies`: cookie Douyin (bắt buộc cho hầu hết tác vụ)
+
 Lấy cookie tự động:
 
+```bash
 python -m tools.cookie_fetcher --config config.yml
+```
+
 Đăng nhập Douyin trong trình duyệt, quay lại terminal và nhấn Enter.
 
-1. Chạy download
+### 3. Chạy download
 
 Theo file config:
 
+```bash
 python run.py -c config.yml
+```
+
 Tải một URL cụ thể (không cần sửa config):
 
-python run.py -c config.yml -u "[https://www.douyin.com/video/7604129988555574538](https://www.douyin.com/video/7604129988555574538)"
+```bash
+python run.py -c config.yml -u "https://www.douyin.com/video/7604129988555574538"
+```
+
 Chạy REST API server:
 
+```bash
 pip install fastapi uvicorn
 python run.py --serve --serve-port 8000
+```
+
 Chạy scheduler (tự động sync kênh theo lịch):
 
+```bash
 python run.py --scheduler
+```
+
 Chạy một lần rồi thoát:
 
+```bash
 python run.py --scheduler --scheduler-once
-
-
-
-
+```
 
  中文文档 (Chinese): [README.zh-CN.md](./README.zh-CN.md)
 
@@ -78,11 +127,7 @@ A desktop GUI built on the same backend — paste a link to start, sync your fol
 | Archive · SQLite history & filters | Settings · naming templates     | Live progress · per-job event log |
 
 
-
-
 ## Feature Overview
-
-
 
 ### Supported
 
@@ -118,8 +163,6 @@ A desktop GUI built on the same backend — paste a link to start, sync your fol
 | CI/CD                           | GitHub Actions for testing and linting                                       |
 
 
-
-
 ### Current Limitations
 
 - Browser fallback is fully validated for `post`; `like/mix/music` currently relies on API pagination
@@ -130,18 +173,12 @@ A desktop GUI built on the same backend — paste a link to start, sync your fol
 - Live stream recording saves FLV natively; HLS sources only save the playlist (use ffmpeg for playable output)
 - The webcast room endpoint is not verified against every live scenario — treat as experimental
 
-
-
 ## Quick Start
-
-
 
 ### 1) Requirements
 
 - Python 3.8+
 - macOS / Linux / Windows
-
-
 
 ### 2) Install dependencies
 
@@ -156,15 +193,11 @@ pip install playwright
 python -m playwright install chromium
 ```
 
-
-
 ### 3) Copy config file
 
 ```bash
 cp config.example.yml config.yml
 ```
-
-
 
 ### 4) Get cookies (recommended: automatic)
 
@@ -180,8 +213,6 @@ After logging into Douyin, return to the terminal and press Enter. Cookies will 
 docker build -t douyin-downloader .
 docker run -v $(pwd)/config.yml:/app/config.yml -v $(pwd)/Downloaded:/app/Downloaded douyin-downloader
 ```
-
-
 
 ## Minimal Working Config
 
@@ -231,19 +262,13 @@ transcript:
   api_key: ""
 ```
 
-
-
 ## Usage
-
-
 
 ### Run with a config file
 
 ```bash
 python run.py -c config.yml
 ```
-
-
 
 ### Append CLI arguments
 
@@ -253,8 +278,6 @@ python run.py -c config.yml \
   -t 8 \
   -p ./Downloaded
 ```
-
-
 
 ### Arguments
 
@@ -276,11 +299,7 @@ python run.py -c config.yml \
 | `--version`         | Show version number                                             |
 
 
-
-
 ## Typical Scenarios
-
-
 
 ### Download one video
 
@@ -289,16 +308,12 @@ link:
   - https://www.douyin.com/video/7604129988555574538
 ```
 
-
-
 ### Download one image-note
 
 ```yaml
 link:
   - https://www.douyin.com/note/7341234567890123456
 ```
-
-
 
 ### Download a collection
 
@@ -307,16 +322,12 @@ link:
   - https://www.douyin.com/collection/7341234567890123456
 ```
 
-
-
 ### Download a music track
 
 ```yaml
 link:
   - https://www.douyin.com/music/7341234567890123456
 ```
-
-
 
 ### Batch download a creator's posts
 
@@ -329,8 +340,6 @@ number:
   post: 50
 ```
 
-
-
 ### Batch download a creator's liked posts
 
 ```yaml
@@ -341,8 +350,6 @@ mode:
 number:
   like: 0    # 0 means download all
 ```
-
-
 
 ### Download multiple modes at once
 
@@ -369,8 +376,6 @@ number:
   collect: 0
 ```
 
-
-
 ### Download logged-in collected mixes
 
 ```yaml
@@ -381,8 +386,6 @@ mode:
 number:
   collectmix: 0
 ```
-
-
 
 ### Record a live stream (experimental)
 
@@ -419,16 +422,12 @@ python run.py --hot-board 30 -p ./Downloaded
 # Output: ./Downloaded/hot_board/20260424_221530.jsonl
 ```
 
-
-
 ### Search by keyword
 
 ```bash
 python run.py --search "猫咪" --search-max 100 -p ./Downloaded
 # Output: ./Downloaded/search/猫咪_20260424_221530.jsonl
 ```
-
-
 
 ### Run as REST API server
 
@@ -480,16 +479,12 @@ increase:
 database: true    # incremental mode requires database
 ```
 
-
-
 ### Full crawl (no item limit)
 
 ```yaml
 number:
   post: 0
 ```
-
-
 
 ## Optional Feature: Video Transcription (`transcript`)
 
@@ -515,8 +510,6 @@ Recommended to provide key through environment variable:
 export OPENAI_API_KEY="sk-xxxx"
 ```
 
-
-
 ### 2) Output files
 
 When enabled, it generates:
@@ -540,8 +533,6 @@ Plain `pytest` is also supported now:
 pytest -q
 ```
 
-
-
 ## Key Config Fields
 
 
@@ -564,8 +555,6 @@ pytest -q
 | `database_path`                                 | SQLite path, default is `dy_downloader.db` in the current working directory                                                                                |
 | `thread`                                        | Concurrent download count                                                                                                                                  |
 | `retry_times`                                   | Retry count on failure                                                                                                                                     |
-
-
 
 
 ## Output Structure
@@ -609,8 +598,6 @@ workspace/
                 └── ..._room.json
 ```
 
-
-
 ## Re-downloading Content
 
 The program uses a **database record + local file** dual check to decide whether to skip already-downloaded content. To force re-download, you need to clean up accordingly:
@@ -625,16 +612,12 @@ rm -rf Downloaded/AuthorName/post/*_<aweme_id>/
 sqlite3 dy_downloader.db "DELETE FROM aweme WHERE aweme_id = '<aweme_id>';"
 ```
 
-
-
 ### Re-download all items from a specific author
 
 ```bash
 rm -rf Downloaded/AuthorName/
 sqlite3 dy_downloader.db "DELETE FROM aweme WHERE author_name = 'AuthorName';"
 ```
-
-
 
 ### Full reset (re-download everything)
 
@@ -645,11 +628,7 @@ rm dy_downloader.db
 
 > **Note:** Deleting only the database but keeping files will NOT trigger re-download — the program scans local filenames for aweme_id to detect existing downloads. Deleting only files but keeping the database WILL trigger re-download (the program treats "in DB but missing locally" as needing retry).
 
-
-
 ## FAQ
-
-
 
 ### 1) Why do I only get around 20 posts?
 
@@ -658,8 +637,6 @@ This is a common pagination risk-control behavior. Make sure:
 - `browser_fallback.enabled: true`
 - `browser_fallback.headless: false`
 - complete verification manually in the browser popup, and do not close it too early
-
-
 
 ### 2) Why is the progress output noisy/repeated?
 
@@ -674,8 +651,6 @@ Run:
 python -m tools.cookie_fetcher --config config.yml
 ```
 
-
-
 ### 4) Why are transcript files not generated?
 
 Check in order:
@@ -685,19 +660,13 @@ Check in order:
 - whether `OPENAI_API_KEY` (or `transcript.api_key`) is valid
 - whether `response_formats` includes `txt` or `json`
 
-
-
 ### 5) How to view download history?
 
 ```bash
 sqlite3 dy_downloader.db "SELECT aweme_id, title, author_name, datetime(download_time, 'unixepoch', 'localtime') FROM aweme ORDER BY download_time DESC LIMIT 20;"
 ```
 
-
-
 ## Community Group
-
-
 
 点击链接加入群聊【QQ群】：[https://qm.qq.com/q/9xoNt8Wzv4](https://qm.qq.com/q/9xoNt8Wzv4)
 
