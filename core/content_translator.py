@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
@@ -11,6 +12,7 @@ logger = setup_logger("ContentTranslator")
 DEFAULT_API_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
+HASHTAG_RE = re.compile(r"#([^\s#]+)")
 
 
 def resolve_translation_api_key(translation_cfg: Dict[str, Any]) -> Tuple[str, str]:
@@ -32,6 +34,33 @@ def _is_enabled(translation_cfg: Dict[str, Any]) -> bool:
     if isinstance(enabled, str):
         return enabled.strip().lower() in {"1", "true", "yes", "on"}
     return bool(enabled)
+
+
+def build_fallback_vi_content(desc: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
+    text = (desc or "").strip()
+    found_tags = HASHTAG_RE.findall(text)
+    body = HASHTAG_RE.sub(" ", text)
+    body = re.sub(r"\s+", " ", body).strip(" ,，、|-")
+
+    tags_vi: List[str] = []
+    seen = set()
+    for raw in list(tags or []) + found_tags:
+        normalized = str(raw).strip().lstrip("#")
+        if not normalized:
+            continue
+        key = normalized.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        tags_vi.append(normalized)
+
+    title_vi = body or text
+    description_vi = body or text or title_vi
+    return {
+        "title_vi": title_vi,
+        "description_vi": description_vi,
+        "tags_vi": tags_vi,
+    }
 
 
 async def translate_aweme_content(
@@ -110,3 +139,21 @@ async def translate_aweme_content(
     except Exception as exc:
         logger.warning("Translation failed: %s", exc)
         return None
+
+
+async def resolve_aweme_vi_content(
+    desc: str,
+    tags: List[str],
+    translation_cfg: Dict[str, Any],
+) -> Tuple[Dict[str, Any], bool]:
+    translated = await translate_aweme_content(desc, tags, translation_cfg)
+    if translated:
+        return translated, True
+
+    fallback = build_fallback_vi_content(desc, tags)
+    if _is_enabled(translation_cfg):
+        logger.warning(
+            "Using fallback metadata for aweme content (title_vi/description_vi/tags_vi) "
+            "because ChatGPT translation was unavailable"
+        )
+    return fallback, False

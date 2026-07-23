@@ -12,7 +12,7 @@ from control import QueueManager, RateLimiter, RetryHandler
 from core.api_client import DouyinAPIClient
 from core.metadata import extract_author_sec_uid
 from core.transcript_manager import TranscriptManager
-from core.content_translator import translate_aweme_content
+from core.content_translator import resolve_aweme_vi_content
 from storage import Database, FileManager, MetadataHandler
 from utils.logger import setup_logger
 from utils.naming import (
@@ -434,14 +434,14 @@ class BaseDownloader(ABC):
         author = aweme_data.get("author", {})
         tags = self._extract_tags(aweme_data)
         translation_cfg = self.config.get("translation", {}) or {}
-        translated = await translate_aweme_content(desc, tags, translation_cfg)
-        title_vi = None
-        description_vi = None
-        tags_vi = None
-        if translated:
-            title_vi = translated.get("title_vi")
-            description_vi = translated.get("description_vi")
-            tags_vi = translated.get("tags_vi")
+        if not isinstance(translation_cfg, dict):
+            translation_cfg = {}
+        vi_content, metadata_translate_ok = await resolve_aweme_vi_content(
+            desc, tags, translation_cfg
+        )
+        title_vi = vi_content.get("title_vi") or None
+        description_vi = vi_content.get("description_vi") or None
+        tags_vi = vi_content.get("tags_vi") or None
 
         if self.database:
             metadata_json = json.dumps(aweme_data, ensure_ascii=False)
@@ -467,8 +467,6 @@ class BaseDownloader(ABC):
             else:
                 await self.database.add_aweme(record)
 
-            translation_cfg = translation_cfg if isinstance(translation_cfg, dict) else {}
-            metadata_translate_ok = translated is not None
             await self.database.complete_download_handoff(
                 aweme_id=str(aweme_id),
                 channel_id=self.channel_id,
