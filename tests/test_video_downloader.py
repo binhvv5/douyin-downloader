@@ -261,6 +261,37 @@ async def test_should_download_skips_when_aweme_exists_locally(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_should_download_skips_when_aweme_exists_in_database_even_without_local(tmp_path):
+    from storage import Database
+
+    db_path = tmp_path / "test.db"
+    database = Database(str(db_path))
+    await database.initialize()
+    aweme_id = "7600223638943468863"
+    await database.add_aweme(
+        {
+            "aweme_id": aweme_id,
+            "aweme_type": "video",
+            "title": "already in db",
+            "author_id": "u1",
+            "author_name": "author",
+            "create_time": 1700000000,
+            "file_path": "/missing/path",
+            "metadata": "{}",
+        }
+    )
+
+    downloader, api_client = _build_downloader(tmp_path)
+    downloader.database = database
+
+    should_download = await downloader._should_download(aweme_id)
+    assert should_download is False
+
+    await database.close()
+    await api_client.close()
+
+
+@pytest.mark.asyncio
 async def test_download_aweme_assets_uses_publish_date_and_writes_manifest(tmp_path, monkeypatch):
     downloader, api_client = _build_downloader(tmp_path)
     downloader.config.update(music=False, cover=False, avatar=False, json=False, folderstyle=True)

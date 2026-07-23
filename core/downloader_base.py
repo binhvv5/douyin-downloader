@@ -154,22 +154,11 @@ class BaseDownloader(ABC):
         pass
 
     async def _should_download(self, aweme_id: str) -> bool:
-        in_local = self._is_locally_downloaded(aweme_id)
-        in_db = False
-        if self.database:
-            in_db = await self.database.is_downloaded(aweme_id)
-
-        if in_db and in_local:
+        if self.database and await self.database.is_downloaded(aweme_id):
+            logger.info("Aweme %s already exists in database, skipping", aweme_id)
             return False
 
-        if in_db and not in_local:
-            logger.info(
-                "Aweme %s exists in database but media file not found locally, retry download",
-                aweme_id,
-            )
-            return True
-
-        if in_local:
+        if self._is_locally_downloaded(aweme_id):
             logger.info("Aweme %s already exists locally, skipping", aweme_id)
             return False
 
