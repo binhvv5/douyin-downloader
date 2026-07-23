@@ -1,61 +1,116 @@
 # Douyin Downloader V2.0
 
 ## How to run
-1. Vào thư mục và kích hoạt môi trường
-Project đã có sẵn virtualenv .venv:
 
-cd /home/trung/Documents/prj/douyin/douyin-downloader
-source .venv/bin/activate
-Nếu chưa cài dependency:
+### 1. Vào thư mục và kích hoạt môi trường
 
+```bash
+cd douyin-downloader
+```
+
+Tạo virtualenv (nếu chưa có) và cài dependency:
+
+**Windows — Git Bash**
+
+```bash
+python -m venv .venv
+source .venv/Scripts/activate
 pip install -r requirements.txt
+```
+
+**Windows — Git CMD / CMD**
+
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+pip install -r requirements.txt
+```
+
+**Windows — PowerShell**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+**Linux / macOS**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 (Tùy chọn — để login cookie tự động / fallback trình duyệt)
 
+```bash
 pip install playwright
 python -m playwright install chromium
-2. Cấu hình
-Bạn đã có config.yml. Nếu chưa có thì copy từ mẫu:
+```
 
+### 2. Cấu hình
+
+Nếu chưa có `config.yml` thì copy từ mẫu:
+
+```bash
 cp config.example.yml config.yml
+```
+
+Trên Windows CMD:
+
+```cmd
+copy config.example.yml config.yml
+```
+
 Chỉnh các mục quan trọng:
 
-link: URL video/user cần tải
-path: thư mục lưu (hiện tại là ../Downloaded/)
-cookies: cookie Douyin (bắt buộc cho hầu hết tác vụ)
+- `link`: URL video/user cần tải
+- `path`: thư mục lưu (ví dụ `../Downloaded/`)
+- `cookies`: cookie Douyin (bắt buộc cho hầu hết tác vụ)
+
 Lấy cookie tự động:
 
+```bash
 python -m tools.cookie_fetcher --config config.yml
+```
+
 Đăng nhập Douyin trong trình duyệt, quay lại terminal và nhấn Enter.
 
-3. Chạy download
+### 3. Chạy download
+
 Theo file config:
 
+```bash
 python run.py -c config.yml
+```
+
 Tải một URL cụ thể (không cần sửa config):
 
+```bash
 python run.py -c config.yml -u "https://www.douyin.com/video/7604129988555574538"
+```
+
 Chạy REST API server:
 
+```bash
 pip install fastapi uvicorn
 python run.py --serve --serve-port 8000
+```
+
 Chạy scheduler (tự động sync kênh theo lịch):
 
+```bash
 python run.py --scheduler
+```
+
 Chạy một lần rồi thoát:
 
+```bash
 python run.py --scheduler --scheduler-once
+```
 
-<p align="center">
-  <img src="https://socialify.git.ci/jiji262/douyin-downloader/image?custom_description=Douyin+batch+download+tool%2C+remove+watermarks%2C+support+batch+download+of+videos%2C+gallery%2C+and+author+homepages.&description=1&font=Source+Code+Pro&forks=1&owner=1&pattern=Circuit+Board&stargazers=1&theme=Light" alt="douyin-downloader" width="820" />
-</p>
-
-<p align="center">
-    <a href="https://linux.do" alt="LINUX DO">
-        <img
-            src="https://img.shields.io/badge/LINUX-DO-FFB003.svg?logo=data:image/svg%2bxml;base64,DQo8c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiPjxwYXRoIGQ9Ik00Ni44Mi0uMDU1aDYuMjVxMjMuOTY5IDIuMDYyIDM4IDIxLjQyNmM1LjI1OCA3LjY3NiA4LjIxNSAxNi4xNTYgOC44NzUgMjUuNDV2Ni4yNXEtMi4wNjQgMjMuOTY4LTIxLjQzIDM4LTExLjUxMiA3Ljg4NS0yNS40NDUgOC44NzRoLTYuMjVxLTIzLjk3LTIuMDY0LTM4LjAwNC0yMS40M1EuOTcxIDY3LjA1Ni0uMDU0IDUzLjE4di02LjQ3M0MxLjM2MiAzMC43ODEgOC41MDMgMTguMTQ4IDIxLjM3IDguODE3IDI5LjA0NyAzLjU2MiAzNy41MjcuNjA0IDQ2LjgyMS0uMDU2IiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZWNlY2VjO2ZpbGwtb3BhY2l0eToxIi8+PHBhdGggZD0iTTQ3LjI2NiAyLjk1N3EyMi41My0uNjUgMzcuNzc3IDE1LjczOGE0OS43IDQ5LjcgMCAwIDEgNi44NjcgMTAuMTU3cS00MS45NjQuMjIyLTgzLjkzIDAgOS43NS0xOC42MTYgMzAuMDI0LTI0LjM4N2E2MSA2MSAwIDAgMSA5LjI2Mi0xLjUwOCIgc3R5bGU9InN0cm9rZTpub25lO2ZpbGwtcnVsZTpldmVub2RkO2ZpbGw6IzE5MTkxOTtmaWxsLW9wYWNpdHk6MSIvPjxwYXRoIGQ9Ik03Ljk4IDcwLjkyNmMyNy45NzctLjAzNSA1NS45NTQgMCA4My45My4xMTNRODMuNDI2IDg3LjQ3MyA2Ni4xMyA5NC4wODZxLTE4LjgxIDYuNTQ0LTM2LjgzMi0xLjg5OC0xNC4yMDMtNy4wOS0yMS4zMTctMjEuMjYyIiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZjlhZjAwO2ZpbGwtb3BhY2l0eToxIi8+PC9zdmc+" /></a>
-</p>
-中文文档 (Chinese): [README.zh-CN.md](./README.zh-CN.md)
-
+ 中文文档 (Chinese): [README.zh-CN.md](./README.zh-CN.md)
 
 A practical Douyin downloader supporting videos, image-notes, collections, music, favorites collections, and profile batch downloads, with progress display, retries, SQLite deduplication, download integrity checks, and browser fallback support.
 
@@ -65,52 +120,48 @@ A desktop GUI built on the same backend — paste a link to start, sync your fol
 
 > **Beta:** The desktop app is currently in closed beta. To try it, download the build from the [Releases](https://github.com/jiji262/douyin-downloader/releases) page.
 
-<table>
-  <tr>
-    <td width="33%"><img src="./img/desktop/001.png" alt="Download — paste a link to start" width="100%" /><br/><sub>Download · paste a link to start</sub></td>
-    <td width="33%"><img src="./img/desktop/002.png" alt="Following sync" width="100%" /><br/><sub>Following · synced creator list</sub></td>
-    <td width="33%"><img src="./img/desktop/003.png" alt="Task Center" width="100%" /><br/><sub>Task Center · per-job status</sub></td>
-  </tr>
-  <tr>
-    <td width="33%"><img src="./img/desktop/004.png" alt="Archive with filters" width="100%" /><br/><sub>Archive · SQLite history & filters</sub></td>
-    <td width="33%"><img src="./img/desktop/005.png" alt="Settings and naming templates" width="100%" /><br/><sub>Settings · naming templates</sub></td>
-    <td width="33%"><img src="./img/desktop/006.png" alt="Live download progress" width="100%" /><br/><sub>Live progress · per-job event log</sub></td>
-  </tr>
-</table>
+
+|                                    |                                 |                                   |
+| ---------------------------------- | ------------------------------- | --------------------------------- |
+| Download · paste a link to start   | Following · synced creator list | Task Center · per-job status      |
+| Archive · SQLite history & filters | Settings · naming templates     | Live progress · per-job event log |
+
 
 ## Feature Overview
 
 ### Supported
 
-| Feature | Description |
-|---------|-------------|
-| Single video download | `/video/{aweme_id}` |
-| Single image-note download | `/note/{note_id}` and `/gallery/{note_id}` |
-| Single collection download | `/collection/{mix_id}` and `/mix/{mix_id}` |
-| Single music download | `/music/{music_id}` (prefers direct audio, fallback to first related aweme) |
-| Short link parsing | `https://v.douyin.com/...`, `v.iesdouyin.com`, bare hosts |
-| Profile batch download | `/user/{sec_uid}` + `mode: [post, like, mix, music]` |
-| Logged-in favorites collections | `/user/self?showTab=favorite_collection` + `mode: [collect, collectmix]` |
-| No-watermark preferred | Automatically selects watermark-free video source |
-| Highest-quality selection | Auto-picks highest bitrate from `video.bit_rate` ladder (video + live-photo) |
-| **Live stream recording** | `live.douyin.com/{room_id}` → FLV/HLS, preserves partial data on stream end |
-| **Comments collection** | Per-aweme comments (+ optional replies) saved as `*_comments.json` |
-| **Hot search + keyword search** | `--hot-board [N]` / `--search "keyword"` dumps to JSONL |
-| **REST API server mode** | `--serve --serve-port 8000` (optional `fastapi + uvicorn`) |
-| **Notification push** | Bark / Telegram / Webhook on download completion |
-| Extra assets | Cover, music, avatar, JSON metadata |
-| Video transcription | Optional, using OpenAI Transcriptions API |
-| Concurrent downloads | Configurable concurrency, default 5 |
-| Retry with backoff | Exponential backoff (1s, 2s, 5s) |
-| Rate limiting | Default 2 req/s |
-| SQLite deduplication | Database + local file dual dedup |
-| Incremental downloads | `increase.post/like/mix/music` |
-| Time filters | `start_time` / `end_time` |
-| Browser fallback | Launches browser when pagination is blocked, manual CAPTCHA supported |
-| Download integrity check | Content-Length validation, auto-cleanup of incomplete files |
-| Progress display | Rich progress bars, supports `progress.quiet_logs` quiet mode |
-| Docker deployment | Dockerfile included |
-| CI/CD | GitHub Actions for testing and linting |
+
+| Feature                         | Description                                                                  |
+| ------------------------------- | ---------------------------------------------------------------------------- |
+| Single video download           | `/video/{aweme_id}`                                                          |
+| Single image-note download      | `/note/{note_id}` and `/gallery/{note_id}`                                   |
+| Single collection download      | `/collection/{mix_id}` and `/mix/{mix_id}`                                   |
+| Single music download           | `/music/{music_id}` (prefers direct audio, fallback to first related aweme)  |
+| Short link parsing              | `https://v.douyin.com/...`, `v.iesdouyin.com`, bare hosts                    |
+| Profile batch download          | `/user/{sec_uid}` + `mode: [post, like, mix, music]`                         |
+| Logged-in favorites collections | `/user/self?showTab=favorite_collection` + `mode: [collect, collectmix]`     |
+| No-watermark preferred          | Automatically selects watermark-free video source                            |
+| Highest-quality selection       | Auto-picks highest bitrate from `video.bit_rate` ladder (video + live-photo) |
+| **Live stream recording**       | `live.douyin.com/{room_id}` → FLV/HLS, preserves partial data on stream end  |
+| **Comments collection**         | Per-aweme comments (+ optional replies) saved as `*_comments.json`           |
+| **Hot search + keyword search** | `--hot-board [N]` / `--search "keyword"` dumps to JSONL                      |
+| **REST API server mode**        | `--serve --serve-port 8000` (optional `fastapi + uvicorn`)                   |
+| **Notification push**           | Bark / Telegram / Webhook on download completion                             |
+| Extra assets                    | Cover, music, avatar, JSON metadata                                          |
+| Video transcription             | Optional, using OpenAI Transcriptions API                                    |
+| Concurrent downloads            | Configurable concurrency, default 5                                          |
+| Retry with backoff              | Exponential backoff (1s, 2s, 5s)                                             |
+| Rate limiting                   | Default 2 req/s                                                              |
+| SQLite deduplication            | Database + local file dual dedup                                             |
+| Incremental downloads           | `increase.post/like/mix/music`                                               |
+| Time filters                    | `start_time` / `end_time`                                                    |
+| Browser fallback                | Launches browser when pagination is blocked, manual CAPTCHA supported        |
+| Download integrity check        | Content-Length validation, auto-cleanup of incomplete files                  |
+| Progress display                | Rich progress bars, supports `progress.quiet_logs` quiet mode                |
+| Docker deployment               | Dockerfile included                                                          |
+| CI/CD                           | GitHub Actions for testing and linting                                       |
+
 
 ### Current Limitations
 
@@ -230,21 +281,23 @@ python run.py -c config.yml \
 
 ### Arguments
 
-| Argument | Description |
-|----------|-------------|
-| `-u, --url` | Append download link(s), can be repeated |
-| `-c, --config` | Specify config file (default: `config.yml`) |
-| `-p, --path` | Specify download directory |
-| `-t, --thread` | Specify concurrency |
-| `--show-warnings` | Show warning/error logs |
-| `-v, --verbose` | Show info/warning/error logs |
-| `--hot-board [N]` | Fetch Douyin hot search board and write JSONL; optional top-N |
-| `--search KEYWORD` | Search videos by keyword, write JSONL |
-| `--search-max N` | Max items for `--search` (default 50) |
-| `--serve` | Run as REST API server (requires `pip install fastapi uvicorn`) |
-| `--serve-host HOST` | REST server listen host (default 127.0.0.1) |
-| `--serve-port PORT` | REST server listen port (default 8000) |
-| `--version` | Show version number |
+
+| Argument            | Description                                                     |
+| ------------------- | --------------------------------------------------------------- |
+| `-u, --url`         | Append download link(s), can be repeated                        |
+| `-c, --config`      | Specify config file (default: `config.yml`)                     |
+| `-p, --path`        | Specify download directory                                      |
+| `-t, --thread`      | Specify concurrency                                             |
+| `--show-warnings`   | Show warning/error logs                                         |
+| `-v, --verbose`     | Show info/warning/error logs                                    |
+| `--hot-board [N]`   | Fetch Douyin hot search board and write JSONL; optional top-N   |
+| `--search KEYWORD`  | Search videos by keyword, write JSONL                           |
+| `--search-max N`    | Max items for `--search` (default 50)                           |
+| `--serve`           | Run as REST API server (requires `pip install fastapi uvicorn`) |
+| `--serve-host HOST` | REST server listen host (default 127.0.0.1)                     |
+| `--serve-port PORT` | REST server listen port (default 8000)                          |
+| `--version`         | Show version number                                             |
+
 
 ## Typical Scenarios
 
@@ -385,12 +438,14 @@ python run.py --serve --serve-port 8000
 
 Endpoints:
 
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/v1/download` | Submit `{"url": "..."}`, returns `{job_id, status}` |
-| GET | `/api/v1/jobs/{job_id}` | Get a specific job's status/counts |
-| GET | `/api/v1/jobs` | List recent jobs (TTL + capacity capped) |
-| GET | `/api/v1/health` | Health probe |
+
+| Method | Path                    | Description                                         |
+| ------ | ----------------------- | --------------------------------------------------- |
+| POST   | `/api/v1/download`      | Submit `{"url": "..."}`, returns `{job_id, status}` |
+| GET    | `/api/v1/jobs/{job_id}` | Get a specific job's status/counts                  |
+| GET    | `/api/v1/jobs`          | List recent jobs (TTL + capacity capped)            |
+| GET    | `/api/v1/health`        | Health probe                                        |
+
 
 Finished jobs are pruned by TTL (default 24h) and max-jobs (default 500) — in-flight jobs are never pruned. Configure via `server.max_jobs` / `server.job_ttl_seconds`.
 
@@ -415,7 +470,6 @@ notifications:
 ```
 
 All enabled providers are notified in parallel; a failing provider never blocks the download flow.
-
 
 ### Incremental download (only new items)
 
@@ -481,25 +535,27 @@ pytest -q
 
 ## Key Config Fields
 
-| Field | Description |
-|-------|-------------|
-| `mode` | Supports `post`/`like`/`mix`/`music`; logged-in favorites mode additionally supports standalone `collect`/`collectmix` |
-| `number.post/like/mix/music/collect/collectmix` | Per-mode download limit, 0 = unlimited |
-| `increase.post/like/mix/music` | Per-mode incremental toggle |
-| `start_time` / `end_time` | Time filter (format: `YYYY-MM-DD`) |
-| `folderstyle` | Create per-item subdirectories |
-| `browser_fallback.*` | Browser fallback for `post` when pagination is restricted |
-| `progress.quiet_logs` | Quiet logs during progress stage |
-| `transcript.*` | Optional transcription after video download |
-| `comments.*` | Per-aweme comments collection (opt-in) |
-| `live.*` | Live stream recording options (max_duration_seconds / chunk_size / idle_timeout_seconds) |
-| `notifications.*` | Bark/Telegram/Webhook push on completion |
-| `server.*` | REST API server tuning (max_jobs, job_ttl_seconds) |
-| `proxy` | HTTP/HTTPS proxy, stable residential proxies such as [Swiftproxy](https://www.swiftproxy.net/?ref=douyindownloader) are recommended for better reliability |
-| `database` | Enable SQLite deduplication and history |
-| `database_path` | SQLite path, default is `dy_downloader.db` in the current working directory |
-| `thread` | Concurrent download count |
-| `retry_times` | Retry count on failure |
+
+| Field                                           | Description                                                                                                                                                |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mode`                                          | Supports `post`/`like`/`mix`/`music`; logged-in favorites mode additionally supports standalone `collect`/`collectmix`                                     |
+| `number.post/like/mix/music/collect/collectmix` | Per-mode download limit, 0 = unlimited                                                                                                                     |
+| `increase.post/like/mix/music`                  | Per-mode incremental toggle                                                                                                                                |
+| `start_time` / `end_time`                       | Time filter (format: `YYYY-MM-DD`)                                                                                                                         |
+| `folderstyle`                                   | Create per-item subdirectories                                                                                                                             |
+| `browser_fallback.*`                            | Browser fallback for `post` when pagination is restricted                                                                                                  |
+| `progress.quiet_logs`                           | Quiet logs during progress stage                                                                                                                           |
+| `transcript.*`                                  | Optional transcription after video download                                                                                                                |
+| `comments.*`                                    | Per-aweme comments collection (opt-in)                                                                                                                     |
+| `live.*`                                        | Live stream recording options (max_duration_seconds / chunk_size / idle_timeout_seconds)                                                                   |
+| `notifications.*`                               | Bark/Telegram/Webhook push on completion                                                                                                                   |
+| `server.*`                                      | REST API server tuning (max_jobs, job_ttl_seconds)                                                                                                         |
+| `proxy`                                         | HTTP/HTTPS proxy, stable residential proxies such as [Swiftproxy](https://www.swiftproxy.net/?ref=douyindownloader) are recommended for better reliability |
+| `database`                                      | Enable SQLite deduplication and history                                                                                                                    |
+| `database_path`                                 | SQLite path, default is `dy_downloader.db` in the current working directory                                                                                |
+| `thread`                                        | Concurrent download count                                                                                                                                  |
+| `retry_times`                                   | Retry count on failure                                                                                                                                     |
+
 
 ## Output Structure
 
@@ -611,8 +667,6 @@ sqlite3 dy_downloader.db "SELECT aweme_id, title, author_name, datetime(download
 ```
 
 ## Community Group
-
-<img src="./img/fuye.jpg" alt="qun" width="360" />
 
 点击链接加入群聊【QQ群】：[https://qm.qq.com/q/9xoNt8Wzv4](https://qm.qq.com/q/9xoNt8Wzv4)
 
