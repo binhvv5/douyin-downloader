@@ -103,6 +103,64 @@ def test_like_strategy_increment_stops_at_first_downloaded_aweme():
     assert downloader.api_client.calls == [0]
 
 
+def test_post_strategy_fills_undownloaded_batch_skipping_existing():
+    class _API:
+        def __init__(self):
+            self.calls = []
+
+        async def get_user_post(self, _sec_uid, max_cursor=0, count=20):
+            self.calls.append(max_cursor)
+            if max_cursor == 0:
+                return {
+                    "items": [_make_aweme("downloaded-1"), _make_aweme("new-1")],
+                    "has_more": True,
+                    "max_cursor": 1,
+                    "status_code": 0,
+                }
+            return {
+                "items": [_make_aweme("new-2"), _make_aweme("new-3")],
+                "has_more": False,
+                "max_cursor": 1,
+                "status_code": 0,
+            }
+
+    class _Database:
+        async def is_downloaded(self, aweme_id):
+            return aweme_id == "downloaded-1"
+
+    class _Downloader:
+        def __init__(self):
+            self.api_client = _API()
+            self.rate_limiter = _NoopRateLimiter()
+            self.database = _Database()
+            self.config = type(
+                "Cfg",
+                (),
+                {
+                    "get": lambda _self, key, default=None: {
+                        "number": {"post": 2},
+                        "increase": {"post": True},
+                        "media_types": ["video"],
+                    }.get(key, default)
+                },
+            )()
+            self._progress_update_step = lambda *_args, **_kwargs: None
+            self._filter_by_time = lambda items: items
+            self._limit_count = lambda items, _mode: items
+            self._is_locally_downloaded = lambda _aweme_id: False
+            self._detect_media_type = lambda _item: "video"
+
+        async def _recover_user_post_with_browser(self, sec_uid, user_info, aweme_list):
+            raise AssertionError("browser fallback should not run")
+
+    downloader = _Downloader()
+    strategy = PostUserModeStrategy(downloader)
+    items = asyncio.run(strategy.collect_items("sec_uid_x", {"uid": "uid-1"}))
+
+    assert [item["aweme_id"] for item in items] == ["new-1", "new-2"]
+    assert downloader.api_client.calls == [0, 1]
+
+
 def test_post_strategy_calls_browser_recover_when_pagination_restricted():
     class _API:
         async def get_user_post(self, _sec_uid, max_cursor=0, count=20):

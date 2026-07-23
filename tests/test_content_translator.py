@@ -80,18 +80,15 @@ def test_resolve_translation_api_key_from_env(monkeypatch):
     assert source == "env"
 
 
-def test_build_fallback_vi_content_splits_hashtags():
+def test_build_fallback_vi_content_keeps_fields_empty():
     result = build_fallback_vi_content(
-        "简单一翻，终极经典名菜就能吃到，吃一口，帮孩子解馋三天！ #晓田酸辣汤#酸辣汤#冷吃牛肉#满级吃商通关赛#美食",
+        "简单一翻，终极经典名菜就能吃到！ #晓田酸辣汤#酸辣汤#美食",
         ["美食"],
     )
 
-    assert "晓田酸辣汤" in result["tags_vi"]
-    assert "酸辣汤" in result["tags_vi"]
-    assert "美食" in result["tags_vi"]
-    assert "#" not in result["title_vi"]
-    assert result["title_vi"]
-    assert result["description_vi"] == result["title_vi"]
+    assert result["title_vi"] == ""
+    assert result["description_vi"] == ""
+    assert result["tags_vi"] == []
 
 
 @pytest.mark.asyncio
@@ -122,8 +119,6 @@ async def test_resolve_aweme_vi_content_falls_back_when_llm_unavailable(monkeypa
         {"enabled": True},
     )
     assert llm_ok is False
-    assert content["title_vi"]
-    assert "#" not in content["title_vi"]
-    assert "标签A" in content["tags_vi"]
-    assert "标签B" in content["tags_vi"]
-    assert content["description_vi"]
+    assert content["title_vi"] == ""
+    assert content["description_vi"] == ""
+    assert content["tags_vi"] == []

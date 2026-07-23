@@ -226,10 +226,6 @@ class UserDownloader(BaseDownloader):
         self._progress_set_item_total(result.total, "Items pending download")
         self._progress_update_step("Downloading items", f"{result.total} item(s) pending")
 
-        # Accumulate per-aweme DB records and flush in a single transaction
-        # at the end — avoids one fsync per item across the whole batch.
-        db_batch: Optional[List[Dict[str, Any]]] = [] if self.database else None
-
         async def _process_aweme(item: Dict[str, Any]):
             aweme_id = item.get("aweme_id")
             if not await self._should_download(str(aweme_id or "")):
@@ -244,7 +240,7 @@ class UserDownloader(BaseDownloader):
                 return {"status": "skipped", "aweme_id": aweme_id}
 
             success = await self._download_aweme_assets(
-                item, author_name, mode=mode, db_batch=db_batch
+                item, author_name, mode=mode, db_batch=None
             )
             if not success and self.database and aweme_id:
                 await self.database.mark_download_failed(
@@ -259,9 +255,6 @@ class UserDownloader(BaseDownloader):
             }
 
         download_results = await self.queue_manager.download_batch(_process_aweme, deduped_items)
-
-        if db_batch:
-            await self.database.add_aweme_batch(db_batch)
 
         for entry in download_results:
             status = entry.get("status") if isinstance(entry, dict) else None

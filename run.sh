@@ -20,4 +20,4 @@ if [[ ! -f "$CONFIG" ]]; then
   exit 1
 fi
 
-exec python run.py -c "$CONFIG" "$@"
+exec python run.py -c "$CONFIG" "$@" --scheduler

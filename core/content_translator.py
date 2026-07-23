@@ -1,6 +1,5 @@
 import json
 import os
-import re
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
@@ -12,7 +11,6 @@ logger = setup_logger("ContentTranslator")
 DEFAULT_API_URL = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
-HASHTAG_RE = re.compile(r"#([^\s#]+)")
 
 
 def resolve_translation_api_key(translation_cfg: Dict[str, Any]) -> Tuple[str, str]:
@@ -37,29 +35,10 @@ def _is_enabled(translation_cfg: Dict[str, Any]) -> bool:
 
 
 def build_fallback_vi_content(desc: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
-    text = (desc or "").strip()
-    found_tags = HASHTAG_RE.findall(text)
-    body = HASHTAG_RE.sub(" ", text)
-    body = re.sub(r"\s+", " ", body).strip(" ,，、|-")
-
-    tags_vi: List[str] = []
-    seen = set()
-    for raw in list(tags or []) + found_tags:
-        normalized = str(raw).strip().lstrip("#")
-        if not normalized:
-            continue
-        key = normalized.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        tags_vi.append(normalized)
-
-    title_vi = body or text
-    description_vi = body or text or title_vi
     return {
-        "title_vi": title_vi,
-        "description_vi": description_vi,
-        "tags_vi": tags_vi,
+        "title_vi": "",
+        "description_vi": "",
+        "tags_vi": [],
     }
 
 
@@ -150,10 +129,10 @@ async def resolve_aweme_vi_content(
     if translated:
         return translated, True
 
-    fallback = build_fallback_vi_content(desc, tags)
+    empty = build_fallback_vi_content(desc, tags)
     if _is_enabled(translation_cfg):
         logger.warning(
-            "Using fallback metadata for aweme content (title_vi/description_vi/tags_vi) "
-            "because ChatGPT translation was unavailable"
+            "Leaving title_vi/description_vi/tags_vi empty because ChatGPT translation "
+            "was unavailable (will not copy Chinese source text)"
         )
-    return fallback, False
+    return empty, False

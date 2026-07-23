@@ -199,9 +199,8 @@ def test_user_downloader_rejects_non_self_collect_mode(tmp_path, monkeypatch):
     assert downloader.api_client.collect_calls == 0
 
 
-def test_user_downloader_post_mode_uses_batch_db_insert(tmp_path, monkeypatch):
-    """Post-mode should write all aweme records via a single add_aweme_batch
-    instead of N individual add_aweme commits."""
+def test_user_downloader_post_mode_inserts_aweme_per_video(tmp_path, monkeypatch):
+    """Post-mode should write each aweme via add_aweme right after that video succeeds."""
     from storage.database import Database
 
     db_path = tmp_path / "test.db"
@@ -228,7 +227,7 @@ def test_user_downloader_post_mode_uses_batch_db_insert(tmp_path, monkeypatch):
         queue_manager=QueueManager(max_workers=2),
     )
 
-    add_aweme_calls = {"n": 0}
+    add_aweme_calls = {"n": 0, "ids": []}
     add_aweme_batch_calls: List[List[Dict[str, Any]]] = []
 
     original_add_aweme = database.add_aweme
@@ -236,6 +235,7 @@ def test_user_downloader_post_mode_uses_batch_db_insert(tmp_path, monkeypatch):
 
     async def counting_add_aweme(record):
         add_aweme_calls["n"] += 1
+        add_aweme_calls["ids"].append(record.get("aweme_id"))
         return await original_add_aweme(record)
 
     async def counting_add_aweme_batch(records):
@@ -249,19 +249,20 @@ def test_user_downloader_post_mode_uses_batch_db_insert(tmp_path, monkeypatch):
         return True
 
     async def _fake_download_aweme_assets(item, _author, *, mode=None, db_batch=None):
+        record = {
+            "aweme_id": item.get("aweme_id"),
+            "aweme_type": "video",
+            "title": item.get("desc"),
+            "author_id": item["author"]["uid"],
+            "author_name": item["author"]["nickname"],
+            "create_time": item.get("create_time"),
+            "file_path": "/tmp",
+            "metadata": "{}",
+        }
         if db_batch is not None:
-            db_batch.append(
-                {
-                    "aweme_id": item.get("aweme_id"),
-                    "aweme_type": "video",
-                    "title": item.get("desc"),
-                    "author_id": item["author"]["uid"],
-                    "author_name": item["author"]["nickname"],
-                    "create_time": item.get("create_time"),
-                    "file_path": "/tmp",
-                    "metadata": "{}",
-                }
-            )
+            db_batch.append(record)
+        else:
+            await database.add_aweme(record)
         return True
 
     monkeypatch.setattr(downloader, "_should_download", _always_true)
@@ -270,13 +271,10 @@ def test_user_downloader_post_mode_uses_batch_db_insert(tmp_path, monkeypatch):
     result = asyncio.run(downloader.download({"sec_uid": "sec_uid_x"}))
 
     assert result.success == 2
-    assert add_aweme_calls["n"] == 0, (
-        f"post mode should not call add_aweme per item; got {add_aweme_calls['n']} single inserts"
-    )
-    assert len(add_aweme_batch_calls) == 1
-    assert {r["aweme_id"] for r in add_aweme_batch_calls[0]} == {"111", "222"}
+    assert add_aweme_calls["n"] == 2
+    assert set(add_aweme_calls["ids"]) == {"111", "222"}
+    assert add_aweme_batch_calls == []
 
-    # Verify rows actually landed in the DB.
     assert asyncio.run(database.is_downloaded("111")) is True
     assert asyncio.run(database.is_downloaded("222")) is True
 

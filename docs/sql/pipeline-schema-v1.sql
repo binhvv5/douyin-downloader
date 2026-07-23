@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS channels (
     sec_uid         VARCHAR(128) NULL,
     enabled         TINYINT(1) NOT NULL DEFAULT 1,
     sync_mode       ENUM('full', 'incremental') NOT NULL DEFAULT 'incremental',
+    download_batch_size INT NOT NULL DEFAULT 10,
     last_sync_at    DATETIME NULL,
     notes           TEXT NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

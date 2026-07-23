@@ -2,7 +2,7 @@ import asyncio
 import copy
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from auth import CookieManager
 from cli.main import _dispatch_notifications, _run_with_relogin, download_url
@@ -28,16 +28,30 @@ def _scheduler_lock_timeout(config: ConfigLoader) -> int:
     return max(0, int(scheduler_cfg.get("lock_timeout_seconds") or 0))
 
 
-def _apply_channel_sync_mode(config: ConfigLoader, channel: Dict[str, Any]) -> Dict[str, Any]:
+def _apply_channel_sync_config(
+    config: ConfigLoader, channel: Dict[str, Any]
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     sync_mode = str(channel.get("sync_mode") or "incremental").strip().lower()
     original_increase = copy.deepcopy(config.get("increase") or {})
-    patched = dict(original_increase)
+    original_number = copy.deepcopy(config.get("number") or {})
+
+    patched_increase = dict(original_increase)
     if sync_mode == "incremental":
-        patched["post"] = True
+        patched_increase["post"] = True
     elif sync_mode == "full":
-        patched["post"] = False
-    config.update(increase=patched)
-    return original_increase
+        patched_increase["post"] = False
+
+    patched_number = dict(original_number)
+    if sync_mode == "full":
+        patched_number["post"] = 0
+    else:
+        batch_raw = channel.get("download_batch_size")
+        if batch_raw is None:
+            batch_raw = original_number.get("post", 10)
+        patched_number["post"] = max(0, int(batch_raw))
+
+    config.update(increase=patched_increase, number=patched_number)
+    return original_increase, original_number
 
 
 async def run_scheduler_tick(
@@ -74,10 +88,12 @@ async def run_scheduler_tick(
         display.print_warning("Another channel download is in progress — bỏ qua lượt quét này")
         return False
 
-    original_increase = _apply_channel_sync_mode(config, channel)
+    original_increase, original_number = _apply_channel_sync_config(config, channel)
+    batch_size = int((config.get("number") or {}).get("post") or 0)
     try:
         display.print_info(
-            f"Scheduler: syncing channel [{channel_id}] {channel_name} ({channel.get('sync_mode')})"
+            f"Scheduler: syncing channel [{channel_id}] {channel_name} "
+            f"(sync_mode={channel.get('sync_mode')}, download_batch_size={batch_size or 'unlimited'})"
         )
         result = await _run_with_relogin(
             lambda: download_url(
@@ -102,7 +118,7 @@ async def run_scheduler_tick(
         display.print_warning(f"Channel [{channel_id}] produced no results")
         return False
     finally:
-        config.update(increase=original_increase)
+        config.update(increase=original_increase, number=original_number)
         await lock.release()
 
 

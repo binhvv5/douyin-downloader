@@ -18,7 +18,7 @@ class PostUserModeStrategy(BaseUserModeStrategy):
             logger.error("API client missing get_user_post")
             return []
 
-        aweme_list: List[Dict[str, Any]] = []
+        pending: List[Dict[str, Any]] = []
         max_cursor = 0
         has_more = True
         pagination_restricted = False
@@ -46,9 +46,23 @@ class PostUserModeStrategy(BaseUserModeStrategy):
                 break
 
             page_items = self._filter_pinned_items(page_items)
-            aweme_list.extend(page_items)
+            if media_filter_enabled:
+                page_items = self._filter_by_media_type(page_items)
 
-            self.downloader._progress_update_step("Fetching post list", f"Fetched {len(aweme_list)} item(s)")
+            for item in page_items:
+                if not await self._is_pending_download(item):
+                    continue
+                pending.append(item)
+                if number_limit > 0 and len(pending) >= number_limit:
+                    break
+
+            self.downloader._progress_update_step(
+                "Fetching post list",
+                f"Pending undownloaded {len(pending)} item(s)",
+            )
+
+            if number_limit > 0 and len(pending) >= number_limit:
+                break
 
             has_more = bool(page.get("has_more", False))
             max_cursor = int(page.get("max_cursor", 0) or 0)
@@ -60,21 +74,52 @@ class PostUserModeStrategy(BaseUserModeStrategy):
                 pagination_restricted = True
                 break
 
-            if number_limit > 0:
-                if media_filter_enabled:
-                    if len(self._filter_by_media_type(aweme_list)) >= number_limit:
-                        break
-                elif len(aweme_list) >= number_limit:
-                    aweme_list = aweme_list[:number_limit]
-                    break
-
         if pagination_restricted:
-            self.downloader._progress_update_step("Fetching post list", "Pagination restricted; trying browser fallback")
-            await self.downloader._recover_user_post_with_browser(sec_uid, user_info, aweme_list)
-            if not aweme_list:
+            if number_limit <= 0 or len(pending) < number_limit:
+                self.downloader._progress_update_step(
+                    "Fetching post list", "Pagination restricted; trying browser fallback"
+                )
+                recovered: List[Dict[str, Any]] = []
+                await self.downloader._recover_user_post_with_browser(sec_uid, user_info, recovered)
+                recovered = self._filter_pinned_items(recovered)
+                if media_filter_enabled:
+                    recovered = self._filter_by_media_type(recovered)
+                seen_ids = {
+                    str(item.get("aweme_id") or "").strip()
+                    for item in pending
+                    if item.get("aweme_id")
+                }
+                for item in recovered:
+                    aweme_id = str(item.get("aweme_id") or "").strip()
+                    if not aweme_id or aweme_id in seen_ids:
+                        continue
+                    if not await self._is_pending_download(item):
+                        continue
+                    pending.append(item)
+                    seen_ids.add(aweme_id)
+                    if number_limit > 0 and len(pending) >= number_limit:
+                        break
+            if not pending:
                 raise RuntimeError(
                     "Douyin API returned no posts (possible anti-bot limit);"
                     "retry later or re-login to Douyin to refresh cookies"
                 )
 
-        return aweme_list
+        if number_limit > 0:
+            return pending[:number_limit]
+        return pending
+
+    def apply_filters(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        filtered = self.downloader._filter_by_time(items)
+        return self.downloader._limit_count(filtered, self.mode_name)
+
+    async def _is_pending_download(self, item: Dict[str, Any]) -> bool:
+        aweme_id = str(item.get("aweme_id") or "").strip()
+        if not aweme_id:
+            return False
+        if self.downloader.database and await self.downloader.database.is_downloaded(aweme_id):
+            return False
+        is_local = getattr(self.downloader, "_is_locally_downloaded", None)
+        if callable(is_local) and is_local(aweme_id):
+            return False
+        return True
