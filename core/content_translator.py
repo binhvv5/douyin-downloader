@@ -14,14 +14,15 @@ DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 
 
 def resolve_translation_api_key(translation_cfg: Dict[str, Any]) -> Tuple[str, str]:
+    settings_value = str(translation_cfg.get("api_key", "") or "").strip()
+    if settings_value:
+        return settings_value, "settings"
+
     api_key_env = str(translation_cfg.get("api_key_env", DEFAULT_API_KEY_ENV) or "").strip()
     if api_key_env:
         env_value = os.getenv(api_key_env, "").strip()
         if env_value:
             return env_value, "env"
-    settings_value = str(translation_cfg.get("api_key", "") or "").strip()
-    if settings_value:
-        return settings_value, "settings"
     return "", "none"
 
 

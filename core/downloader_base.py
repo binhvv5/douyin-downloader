@@ -443,6 +443,29 @@ class BaseDownloader(ABC):
         description_vi = vi_content.get("description_vi") or None
         tags_vi = vi_content.get("tags_vi") or None
 
+        if media_type == "video" and video_path is not None:
+            transcript_result = await self.transcript_manager.process_video(
+                video_path, aweme_id=aweme_id
+            )
+            transcript_status = transcript_result.get("status")
+            if transcript_status == "success":
+                for key in ("json_path", "text_path"):
+                    raw = transcript_result.get(key)
+                    if raw:
+                        downloaded_files.append(Path(raw))
+            elif transcript_status == "skipped":
+                logger.info(
+                    "Transcript skipped for aweme %s: %s",
+                    aweme_id,
+                    transcript_result.get("reason", "unknown"),
+                )
+            elif transcript_status == "failed":
+                logger.warning(
+                    "Transcript failed for aweme %s: %s",
+                    aweme_id,
+                    transcript_result.get("error", "unknown"),
+                )
+
         if self.database:
             metadata_json = json.dumps(aweme_data, ensure_ascii=False)
             record = {
@@ -499,24 +522,6 @@ class BaseDownloader(ABC):
         await self.metadata_handler.append_download_manifest(
             self.file_manager.base_path, manifest_record
         )
-
-        if media_type == "video" and video_path is not None:
-            transcript_result = await self.transcript_manager.process_video(
-                video_path, aweme_id=aweme_id
-            )
-            transcript_status = transcript_result.get("status")
-            if transcript_status == "skipped":
-                logger.info(
-                    "Transcript skipped for aweme %s: %s",
-                    aweme_id,
-                    transcript_result.get("reason", "unknown"),
-                )
-            elif transcript_status == "failed":
-                logger.warning(
-                    "Transcript failed for aweme %s: %s",
-                    aweme_id,
-                    transcript_result.get("error", "unknown"),
-                )
 
         self._mark_local_aweme_downloaded(aweme_id)
         logger.info("Downloaded %s: %s (%s)", media_type, desc, aweme_id)

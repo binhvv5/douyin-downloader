@@ -80,6 +80,15 @@ def test_resolve_translation_api_key_from_env(monkeypatch):
     assert source == "env"
 
 
+def test_resolve_translation_api_key_prefers_settings_over_env(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-old")
+    key, source = resolve_translation_api_key(
+        {"api_key_env": "OPENAI_API_KEY", "api_key": "sk-from-yaml"}
+    )
+    assert key == "sk-from-yaml"
+    assert source == "settings"
+
+
 def test_build_fallback_vi_content_keeps_fields_empty():
     result = build_fallback_vi_content(
         "简单一翻，终极经典名菜就能吃到！ #晓田酸辣汤#酸辣汤#美食",
