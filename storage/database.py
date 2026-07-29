@@ -174,6 +174,7 @@ class Database:
         await self._ensure_aweme_pipeline_columns(db, engine="sqlite")
         await self._initialize_pipeline_tables(db, engine="sqlite")
         await self._ensure_channels_download_batch_size(db, engine="sqlite")
+        await self._ensure_channels_pinned_and_like_columns(db, engine="sqlite")
         await self._ensure_file_path2_columns(db, engine="sqlite")
 
         await db.commit()
@@ -288,6 +289,7 @@ class Database:
         await self._ensure_aweme_pipeline_columns(db, engine="mysql")
         await self._initialize_pipeline_tables(db, engine="mysql")
         await self._ensure_channels_download_batch_size(db, engine="mysql")
+        await self._ensure_channels_pinned_and_like_columns(db, engine="mysql")
         await self._ensure_file_path2_columns(db, engine="mysql")
 
         await db.commit()
@@ -378,6 +380,33 @@ class Database:
                 "ALTER TABLE channels ADD COLUMN download_batch_size INTEGER NOT NULL DEFAULT 10"
             )
 
+    async def _ensure_channels_pinned_and_like_columns(
+        self, db: DbConnection, *, engine: str
+    ) -> None:
+        if engine == "mysql":
+            db_name = str(self.mysql_config.get("database") or "douyin_downloader")
+            for column, col_type in (
+                ("download_pinned", "TINYINT(1) NULL"),
+                ("number_like", "INT NULL"),
+            ):
+                cursor = await db.execute(
+                    """
+                    SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = 'channels'
+                      AND COLUMN_NAME = %s
+                    """,
+                    (db_name, column),
+                )
+                if not await cursor.fetchone():
+                    await db.execute(f"ALTER TABLE channels ADD COLUMN {column} {col_type}")
+            return
+
+        cursor = await db.execute("PRAGMA table_info(channels)")
+        existing_columns = {row[1] for row in await cursor.fetchall()}
+        for column in ("download_pinned", "number_like"):
+            if column not in existing_columns:
+                await db.execute(f"ALTER TABLE channels ADD COLUMN {column} INTEGER")
+
     async def _ensure_file_path2_columns(self, db: DbConnection, *, engine: str) -> None:
         aweme_column = "file_path2"
         video_assets_column = "file_path2"
@@ -413,6 +442,8 @@ class Database:
                     enabled         TINYINT(1) NOT NULL DEFAULT 1,
                     sync_mode       ENUM('full', 'incremental') NOT NULL DEFAULT 'incremental',
                     download_batch_size INT NOT NULL DEFAULT 10,
+                    download_pinned TINYINT(1) NULL,
+                    number_like     INT NULL,
                     last_sync_at    DATETIME NULL,
                     notes           TEXT NULL,
                     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -535,6 +566,8 @@ class Database:
                 enabled         INTEGER NOT NULL DEFAULT 1,
                 sync_mode       TEXT NOT NULL DEFAULT 'incremental',
                 download_batch_size INTEGER NOT NULL DEFAULT 10,
+                download_pinned INTEGER,
+                number_like     INTEGER,
                 last_sync_at    TEXT,
                 notes           TEXT,
                 created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1241,7 +1274,7 @@ class Database:
         cursor = await db.execute(
             """
             SELECT id, name, douyin_url, sec_uid, enabled, sync_mode,
-                   download_batch_size, last_sync_at
+                   download_batch_size, last_sync_at, download_pinned, number_like
             FROM channels WHERE enabled = 1 ORDER BY id ASC
             """
         )
@@ -1256,6 +1289,8 @@ class Database:
                 "sync_mode": row[5],
                 "download_batch_size": row[6],
                 "last_sync_at": row[7],
+                "download_pinned": row[8],
+                "number_like": row[9],
             }
             for row in rows
         ]
@@ -1271,7 +1306,7 @@ class Database:
         cursor = await db.execute(
             """
             SELECT id, name, douyin_url, sec_uid, enabled, sync_mode,
-                   download_batch_size, last_sync_at
+                   download_batch_size, last_sync_at, download_pinned, number_like
             FROM channels
             WHERE enabled = 1
             ORDER BY last_sync_at IS NULL DESC, last_sync_at ASC, id ASC
@@ -1290,6 +1325,8 @@ class Database:
             "sync_mode": row[5],
             "download_batch_size": row[6],
             "last_sync_at": row[7],
+            "download_pinned": row[8],
+            "number_like": row[9],
         }
 
     async def mysql_get_lock(self, lock_name: str, timeout_seconds: int) -> bool:

@@ -28,12 +28,53 @@ def _scheduler_lock_timeout(config: ConfigLoader) -> int:
     return max(0, int(scheduler_cfg.get("lock_timeout_seconds") or 0))
 
 
+class ChannelConfigError(ValueError):
+    """Raised when a channel's database-backed configuration is invalid."""
+
+
+def resolve_channel_config_overrides(channel: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a channel DB row's ``download_pinned``/``number_like`` columns into
+    the same in-memory config shape the core downloader already consumes
+    (``{"download_pinned": ..., "number": {"like": ...}}``).
+
+    Only non-NULL database values are included — a missing key here means
+    "no channel-level override", so the caller must keep whatever value is
+    already in the config (which already reflects the file/global default).
+    A present key means the database value is explicit (including
+    ``False``/``0``) and must win over the file/global default.
+    """
+    channel_id = channel.get("id")
+    overrides: Dict[str, Any] = {}
+
+    db_pinned = channel.get("download_pinned")
+    if db_pinned is not None:
+        overrides["download_pinned"] = bool(db_pinned)
+
+    db_like = channel.get("number_like")
+    if db_like is not None:
+        try:
+            like_value = int(db_like)
+        except (TypeError, ValueError):
+            raise ChannelConfigError(
+                f"channel id={channel_id}: number_like must be an integer, got {db_like!r}"
+            )
+        if like_value < 0:
+            raise ChannelConfigError(
+                f"channel id={channel_id}: number_like must be a non-negative integer, "
+                f"got {like_value}"
+            )
+        overrides["number"] = {"like": like_value}
+
+    return overrides
+
+
 def _apply_channel_sync_config(
     config: ConfigLoader, channel: Dict[str, Any]
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+) -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
     sync_mode = str(channel.get("sync_mode") or "incremental").strip().lower()
     original_increase = copy.deepcopy(config.get("increase") or {})
     original_number = copy.deepcopy(config.get("number") or {})
+    original_download_pinned = config.get("download_pinned")
 
     patched_increase = dict(original_increase)
     if sync_mode == "incremental":
@@ -50,8 +91,37 @@ def _apply_channel_sync_config(
             batch_raw = original_number.get("post", 10)
         patched_number["post"] = max(0, int(batch_raw))
 
-    config.update(increase=patched_increase, number=patched_number)
-    return original_increase, original_number
+    # Precedence: non-null channel DB value > existing global/file config value
+    # > hard-coded application default. ``resolve_channel_config_overrides``
+    # only returns keys the channel explicitly overrides in the DB, so a
+    # missing key here naturally falls through to what ConfigLoader already
+    # resolved from file/env/hard-coded defaults.
+    overrides = resolve_channel_config_overrides(channel)
+    patched_download_pinned = overrides.get("download_pinned", original_download_pinned)
+    if "number" in overrides:
+        patched_number["like"] = overrides["number"]["like"]
+
+    config.update(
+        increase=patched_increase,
+        number=patched_number,
+        download_pinned=patched_download_pinned,
+    )
+
+    pinned_source = "database" if "download_pinned" in overrides else "file_default"
+    like_source = "database" if "number" in overrides else "file_default"
+    logger.info(
+        "Resolved channel config: channel_id=%s channel_name=%s "
+        "config_source=download_pinned:%s;number_like:%s "
+        "download_pinned=%s number_like=%s",
+        channel.get("id"),
+        channel.get("name"),
+        pinned_source,
+        like_source,
+        patched_download_pinned,
+        patched_number.get("like"),
+    )
+
+    return original_increase, original_number, original_download_pinned
 
 
 async def run_scheduler_tick(
@@ -88,9 +158,25 @@ async def run_scheduler_tick(
         display.print_warning("Another channel download is in progress — bỏ qua lượt quét này")
         return False
 
-    original_increase, original_number = _apply_channel_sync_config(config, channel)
-    batch_size = int((config.get("number") or {}).get("post") or 0)
+    original_increase = original_number = original_download_pinned = None
     try:
+        try:
+            (
+                original_increase,
+                original_number,
+                original_download_pinned,
+            ) = _apply_channel_sync_config(config, channel)
+        except ChannelConfigError as exc:
+            logger.error(
+                "Scheduler tick: invalid channel config id=%s (%s): %s",
+                channel_id,
+                channel_name,
+                exc,
+            )
+            display.print_error(f"Channel [{channel_id}] config error: {exc}")
+            return False
+
+        batch_size = int((config.get("number") or {}).get("post") or 0)
         display.print_info(
             f"Scheduler: syncing channel [{channel_id}] {channel_name} "
             f"(sync_mode={channel.get('sync_mode')}, download_batch_size={batch_size or 'unlimited'})"
@@ -118,7 +204,12 @@ async def run_scheduler_tick(
         display.print_warning(f"Channel [{channel_id}] produced no results")
         return False
     finally:
-        config.update(increase=original_increase, number=original_number)
+        if original_increase is not None:
+            config.update(
+                increase=original_increase,
+                number=original_number,
+                download_pinned=original_download_pinned,
+            )
         await lock.release()
 
 

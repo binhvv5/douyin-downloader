@@ -1,12 +1,28 @@
--- SRS Pipeline Schema v1.1 — Dự án nghiên cứu
+-- Migration v1.1 — bổ sung schema pipeline (dự án nghiên cứu)
 -- Ref: docs/SRS-douyin-download-pipeline.md
--- Database: douyin_downloader
-
-CREATE DATABASE IF NOT EXISTS douyin_downloader
-  DEFAULT CHARACTER SET utf8mb4
-  DEFAULT COLLATE utf8mb4_unicode_ci;
-
-USE douyin_downloader;
+-- Usage: mysql -u douyin -p douyin_downloader < docs/sql/pipeline-migrate-existing-v1.sql
+--   (or: mysql -u douyin -p --database=<your_database> < ...)
+--
+-- This file does NOT hard-code `USE douyin_downloader` - it operates
+-- entirely on whatever database the calling session/connection has
+-- already selected (via `mysql ... <dbname> < file`, `--database=`, a
+-- prior `USE`, or a client library's own `database=` connection
+-- parameter). Same convention and rationale as
+-- docs/pipeline-migrate-channel-pipeline-config-v4.sql's own header: a
+-- hard-coded `USE douyin_downloader` would make it possible for a test
+-- runner targeting a differently-named disposable database to silently
+-- execute this file's DDL/DML against the real `douyin_downloader`
+-- database instead. This does not change this file's documented usage
+-- above (`mysql ... douyin_downloader < ...` already selects that
+-- database via the CLI argument) - it only removes a redundant statement
+-- that becomes a hazard once a different database is selected instead.
+--
+-- Assumes `aweme` already exists (owned by the separate Download Service
+-- repository) with at least `aweme_id`, `aweme_type`, and `download_time`
+-- columns - this file only ALTERs that table, it never CREATEs it. See
+-- dub_worker/tests/test_db_pipeline_config_integration.py for the minimal,
+-- clearly-labeled pre-v1 baseline used to exercise this file for real in
+-- isolated integration tests.
 
 CREATE TABLE IF NOT EXISTS channels (
     id              INT AUTO_INCREMENT PRIMARY KEY,
@@ -15,9 +31,6 @@ CREATE TABLE IF NOT EXISTS channels (
     sec_uid         VARCHAR(128) NULL,
     enabled         TINYINT(1) NOT NULL DEFAULT 1,
     sync_mode       ENUM('full', 'incremental') NOT NULL DEFAULT 'incremental',
-    download_batch_size INT NOT NULL DEFAULT 10,
-    download_pinned TINYINT(1) NULL,
-    number_like     INT NULL,
     last_sync_at    DATETIME NULL,
     notes           TEXT NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -26,37 +39,51 @@ CREATE TABLE IF NOT EXISTS channels (
     KEY idx_channels_enabled (enabled)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS aweme (
-    id                  INT AUTO_INCREMENT PRIMARY KEY,
-    aweme_id            VARCHAR(64) NOT NULL,
-    aweme_type          VARCHAR(32) NOT NULL DEFAULT 'video',
-    channel_id          INT NULL,
-    title               TEXT NULL,
-    title_vi            TEXT NULL,
-    description_vi      TEXT NULL,
-    tags_vi             TEXT NULL,
-    author_id           VARCHAR(64) NULL,
-    author_name         VARCHAR(255) NULL,
-    author_sec_uid      VARCHAR(128) NULL,
-    create_time         BIGINT NULL,
-    download_time       BIGINT NULL,
-    download_status     ENUM(
-        'pending', 'downloading', 'success', 'failed', 'skipped'
-    ) NOT NULL DEFAULT 'pending',
-    file_path           TEXT NULL,
-    metadata            LONGTEXT NULL,
-    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_aweme_id (aweme_id),
-    KEY idx_aweme_channel_id (channel_id),
-    KEY idx_aweme_author_id (author_id),
-    KEY idx_aweme_download_time (download_time),
-    KEY idx_aweme_download_status (download_status),
-    KEY idx_aweme_create_time (create_time),
-    CONSTRAINT fk_aweme_channel
-        FOREIGN KEY (channel_id) REFERENCES channels(id)
-        ON DELETE SET NULL ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'aweme' AND COLUMN_NAME = 'channel_id'
+);
+SET @sql = IF(@col_exists = 0,
+    'ALTER TABLE aweme ADD COLUMN channel_id INT NULL AFTER aweme_type',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'aweme' AND COLUMN_NAME = 'download_status'
+);
+SET @sql = IF(@col_exists = 0,
+    'ALTER TABLE aweme ADD COLUMN download_status ENUM(''pending'',''downloading'',''success'',''failed'',''skipped'') NOT NULL DEFAULT ''success'' AFTER download_time',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'aweme' AND COLUMN_NAME = 'created_at'
+);
+SET @sql = IF(@col_exists = 0,
+    'ALTER TABLE aweme ADD COLUMN created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @col_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'aweme' AND COLUMN_NAME = 'updated_at'
+);
+SET @sql = IF(@col_exists = 0,
+    'ALTER TABLE aweme ADD COLUMN updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+UPDATE aweme SET download_status = 'success' WHERE download_time IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS video_assets (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -101,10 +128,7 @@ CREATE TABLE IF NOT EXISTS pipeline_jobs (
     UNIQUE KEY uq_pipeline_jobs_aweme_stage (aweme_id, stage),
     KEY idx_pipeline_claim (stage, status, priority, created_at),
     KEY idx_pipeline_aweme_id (aweme_id),
-    KEY idx_pipeline_channel_id (channel_id),
-    CONSTRAINT fk_pipeline_jobs_channel
-        FOREIGN KEY (channel_id) REFERENCES channels(id)
-        ON DELETE SET NULL ON UPDATE CASCADE
+    KEY idx_pipeline_channel_id (channel_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS upload_accounts (
@@ -152,3 +176,29 @@ CREATE TABLE IF NOT EXISTS upload_records (
         FOREIGN KEY (account_id) REFERENCES upload_accounts(id)
         ON DELETE RESTRICT ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+SET @fk_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'aweme'
+      AND CONSTRAINT_NAME = 'fk_aweme_channel'
+);
+SET @sql = IF(@fk_exists = 0,
+    'ALTER TABLE aweme ADD CONSTRAINT fk_aweme_channel FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE SET NULL ON UPDATE CASCADE',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @fk_exists = (
+    SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'pipeline_jobs'
+      AND CONSTRAINT_NAME = 'fk_pipeline_jobs_channel'
+);
+SET @sql = IF(@fk_exists = 0,
+    'ALTER TABLE pipeline_jobs ADD CONSTRAINT fk_pipeline_jobs_channel FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE SET NULL ON UPDATE CASCADE',
+    'SELECT 1');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
