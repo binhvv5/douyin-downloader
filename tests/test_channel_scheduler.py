@@ -8,6 +8,53 @@ from storage import Database
 
 
 @pytest.mark.asyncio
+async def test_daily_download_quota_respects_limit(tmp_path):
+    import time
+
+    db_path = tmp_path / "quota.db"
+    database = Database(str(db_path))
+    await database.initialize()
+
+    channel_id = await database.upsert_channel(
+        name="Quota",
+        douyin_url="https://www.douyin.com/user/quota",
+        sec_uid="sec_quota",
+    )
+
+    db = await database._get_conn()
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS channel_pipeline_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id INTEGER NOT NULL UNIQUE,
+            daily_video_limit INTEGER
+        )
+        """
+    )
+    await db.execute(
+        "INSERT INTO channel_pipeline_configs (channel_id, daily_video_limit) VALUES (?, ?)",
+        (channel_id, 5),
+    )
+    now = int(time.time())
+    for i in range(3):
+        await db.execute(
+            """
+            INSERT INTO aweme (aweme_id, aweme_type, channel_id, download_status, download_time)
+            VALUES (?, 'video', ?, 'success', ?)
+            """,
+            (f"a{i}", channel_id, now),
+        )
+    await db.commit()
+
+    quota = await database.get_channel_daily_download_quota(channel_id)
+    assert quota["limit"] == 5
+    assert quota["used"] == 3
+    assert quota["remaining"] == 2
+
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_pick_next_channel_prefers_never_synced(tmp_path):
     db_path = tmp_path / "test.db"
     database = Database(str(db_path))

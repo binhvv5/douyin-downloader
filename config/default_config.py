@@ -59,6 +59,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "progress": {
         "quiet_logs": True,
     },
+    "logging": {
+        "enabled": True,
+        "dir": "logs",
+        "file": "douyin-downloader.log",
+        "level": "INFO",
+        "max_bytes": 20971520,
+        "backup_count": 10,
+    },
     "transcript": {
         "enabled": False,
         "model": "gpt-4o-mini-transcribe",

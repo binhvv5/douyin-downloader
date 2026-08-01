@@ -88,6 +88,10 @@ class BaseDownloader(ABC):
         self._download_error_log_limit = 5
 
     def _progress_update_step(self, step: str, detail: str = "") -> None:
+        if detail:
+            logger.info("[step] %s | %s", step, detail)
+        else:
+            logger.info("[step] %s", step)
         if not self.progress_reporter:
             return
         try:
@@ -96,6 +100,7 @@ class BaseDownloader(ABC):
             logger.debug("Progress update_step failed: %s", exc)
 
     def _progress_set_item_total(self, total: int, detail: str = "") -> None:
+        logger.info("[step] items total=%s%s", total, f" | {detail}" if detail else "")
         if not self.progress_reporter:
             return
         try:
@@ -104,6 +109,7 @@ class BaseDownloader(ABC):
             logger.debug("Progress set_item_total failed: %s", exc)
 
     def _progress_advance_item(self, status: str, detail: str = "") -> None:
+        logger.info("[step] item %s%s", status, f" | {detail}" if detail else "")
         if not self.progress_reporter:
             return
         try:
@@ -248,6 +254,7 @@ class BaseDownloader(ABC):
             return False
 
         desc = (aweme_data.get("desc", "no_title") or "").strip() or "no_title"
+        title_preview = desc if len(desc) <= 80 else desc[:77] + "..."
         publish_ts, publish_date = self._resolve_publish_time(aweme_data.get("create_time"))
         if not publish_date:
             publish_date = datetime.now().strftime("%Y-%m-%d")
@@ -257,6 +264,15 @@ class BaseDownloader(ABC):
                 publish_date,
             )
         media_type = self._detect_media_type(aweme_data)
+        logger.info(
+            "[step] start download aweme_id=%s author=%s type=%s mode=%s date=%s title=%s",
+            aweme_id,
+            author_name,
+            media_type,
+            mode or "-",
+            publish_date,
+            title_preview,
+        )
         template_context = build_aweme_context(
             aweme_id=str(aweme_id),
             title=desc,
@@ -305,9 +321,11 @@ class BaseDownloader(ABC):
 
             video_url, video_headers = video_info
             video_path = save_dir / f"{file_stem}.mp4"
+            logger.info("[step] downloading video aweme_id=%s -> %s", aweme_id, video_path)
             if not await self._download_with_retry(
                 video_url, video_path, session, headers=video_headers
             ):
+                logger.error("[step] video download failed aweme_id=%s", aweme_id)
                 return False
             downloaded_files.append(video_path)
 
@@ -315,6 +333,7 @@ class BaseDownloader(ABC):
                 cover_source = aweme_data.get("video", {}).get("cover")
                 if self._extract_urls(cover_source):
                     cover_path = save_dir / f"{file_stem}_cover.jpg"
+                    logger.info("[step] downloading cover aweme_id=%s -> %s", aweme_id, cover_path)
                     if await self._download_first_available(
                         cover_source,
                         cover_path,
@@ -328,6 +347,7 @@ class BaseDownloader(ABC):
                 music_url = self._extract_first_url(aweme_data.get("music", {}).get("play_url"))
                 if music_url:
                     music_path = save_dir / f"{file_stem}_music.mp3"
+                    logger.info("[step] downloading music aweme_id=%s -> %s", aweme_id, music_path)
                     if await self._download_with_retry(
                         music_url,
                         music_path,
@@ -436,18 +456,34 @@ class BaseDownloader(ABC):
         translation_cfg = self.config.get("translation", {}) or {}
         if not isinstance(translation_cfg, dict):
             translation_cfg = {}
+        logger.info(
+            "[step] translate metadata aweme_id=%s enabled=%s",
+            aweme_id,
+            bool(translation_cfg.get("enabled")),
+        )
         vi_content, metadata_translate_ok = await resolve_aweme_vi_content(
             desc, tags, translation_cfg
         )
         title_vi = vi_content.get("title_vi") or None
         description_vi = vi_content.get("description_vi") or None
         tags_vi = vi_content.get("tags_vi") or None
+        logger.info(
+            "[step] translate metadata done aweme_id=%s ok=%s",
+            aweme_id,
+            metadata_translate_ok,
+        )
 
         if media_type == "video" and video_path is not None:
+            logger.info("[step] transcript aweme_id=%s path=%s", aweme_id, video_path)
             transcript_result = await self.transcript_manager.process_video(
                 video_path, aweme_id=aweme_id
             )
             transcript_status = transcript_result.get("status")
+            logger.info(
+                "[step] transcript finished aweme_id=%s status=%s",
+                aweme_id,
+                transcript_status,
+            )
             if transcript_status == "success":
                 for key in ("json_path", "text_path"):
                     raw = transcript_result.get(key)
@@ -467,6 +503,7 @@ class BaseDownloader(ABC):
                 )
 
         if self.database:
+            logger.info("[step] db save aweme_id=%s", aweme_id)
             metadata_json = json.dumps(aweme_data, ensure_ascii=False)
             record = {
                 "aweme_id": aweme_id,
@@ -490,6 +527,7 @@ class BaseDownloader(ABC):
             else:
                 await self.database.add_aweme(record)
 
+            logger.info("[step] pipeline handoff aweme_id=%s", aweme_id)
             await self.database.complete_download_handoff(
                 aweme_id=str(aweme_id),
                 channel_id=self.channel_id,
@@ -500,6 +538,7 @@ class BaseDownloader(ABC):
                 base_path=self.file_manager.base_path,
                 path2=self.config.get("path2"),
             )
+            logger.info("[step] pipeline handoff done aweme_id=%s", aweme_id)
 
         manifest_record = {
             "date": publish_date,
@@ -524,6 +563,13 @@ class BaseDownloader(ABC):
         )
 
         self._mark_local_aweme_downloaded(aweme_id)
+        logger.info(
+            "[step] done aweme_id=%s type=%s files=%d title=%s",
+            aweme_id,
+            media_type,
+            len(downloaded_files),
+            title_preview,
+        )
         logger.info("Downloaded %s: %s (%s)", media_type, desc, aweme_id)
         return True
 

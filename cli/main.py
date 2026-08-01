@@ -15,13 +15,19 @@ from core import DouyinAPIClient, DownloaderFactory, URLParser
 from core import LoginRequiredError
 from cli.login_flow import can_interactive_login, interactive_relogin
 from storage import Database, FileManager, create_database
-from utils.logger import set_console_log_level, setup_logger
+from utils.logger import configure_app_logging, set_console_log_level, setup_logger
 from utils.notifier import build_notifier
 from control.channel_download_lock import ChannelDownloadLock
 from utils.validators import is_short_url, normalize_short_url
 
 logger = setup_logger("CLI")
 display = ProgressDisplay()
+
+
+def _init_file_logging(config: ConfigLoader) -> None:
+    log_path = configure_app_logging(config.config, project_root=Path(__file__).resolve().parent.parent)
+    if log_path:
+        display.print_info(f"Logs: {log_path}")
 
 
 def _as_bool(value: Any, default: bool = True) -> bool:
@@ -261,6 +267,8 @@ async def main_async(args):
             config = ConfigLoader(None)
     else:
         config = ConfigLoader(config_path)
+
+    _init_file_logging(config)
 
     if args.path:
         config.update(path=args.path)

@@ -1,11 +1,13 @@
 import os
 import re
+import time
 from pathlib import Path
 from typing import Dict, Optional, Union
 
 import aiofiles
 import aiohttp
 
+from utils.helpers import format_size
 from utils.logger import setup_logger
 from utils.validators import sanitize_filename
 
@@ -194,7 +196,9 @@ class FileManager:
 
         final_path = save_path
         tmp_path = save_path.with_suffix(save_path.suffix + ".tmp")
+        started = time.monotonic()
         try:
+            logger.info("[step] http GET start file=%s", save_path.name)
             async with session.get(
                 url,
                 timeout=aiohttp.ClientTimeout(total=300),
@@ -209,11 +213,38 @@ class FileManager:
                     )
                     tmp_path = final_path.with_suffix(final_path.suffix + ".tmp")
                     expected_size = response.content_length
+                    if expected_size:
+                        logger.info(
+                            "[step] http GET writing file=%s size=%s",
+                            final_path.name,
+                            format_size(expected_size),
+                        )
                     written = 0
+                    last_logged = 0
+                    log_every = max(5 * 1024 * 1024, (expected_size or 0) // 4 or 5 * 1024 * 1024)
                     async with aiofiles.open(tmp_path, "wb") as f:
                         async for chunk in response.content.iter_chunked(8192):
                             await f.write(chunk)
                             written += len(chunk)
+                            if written - last_logged >= log_every:
+                                if expected_size:
+                                    pct = min(100, int(written * 100 / expected_size))
+                                    logger.info(
+                                        "[step] http GET progress file=%s %s/%s (%d%%) elapsed=%.1fs",
+                                        final_path.name,
+                                        format_size(written),
+                                        format_size(expected_size),
+                                        pct,
+                                        time.monotonic() - started,
+                                    )
+                                else:
+                                    logger.info(
+                                        "[step] http GET progress file=%s %s elapsed=%.1fs",
+                                        final_path.name,
+                                        format_size(written),
+                                        time.monotonic() - started,
+                                    )
+                                last_logged = written
                     if expected_size is not None and written != expected_size:
                         logger.warning(
                             "Size mismatch for %s: expected %d, got %d",
@@ -224,16 +255,28 @@ class FileManager:
                         tmp_path.unlink(missing_ok=True)
                         return False
                     os.replace(str(tmp_path), str(final_path))
+                    logger.info(
+                        "[step] http GET done file=%s size=%s elapsed=%.1fs",
+                        final_path.name,
+                        format_size(written),
+                        time.monotonic() - started,
+                    )
                     return final_path if return_saved_path else True
                 else:
-                    logger.debug(
-                        "Download failed for %s, status=%s",
+                    logger.warning(
+                        "[step] http GET failed file=%s status=%s elapsed=%.1fs",
                         final_path.name,
                         response.status,
+                        time.monotonic() - started,
                     )
                     return False
         except Exception as e:
-            logger.debug("Download error for %s: %s", final_path.name, e)
+            logger.warning(
+                "[step] http GET error file=%s err=%s elapsed=%.1fs",
+                final_path.name,
+                e,
+                time.monotonic() - started,
+            )
             tmp_path.unlink(missing_ok=True)
             return False
         finally:

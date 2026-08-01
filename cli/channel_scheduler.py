@@ -10,10 +10,18 @@ from cli.progress_display import ProgressDisplay
 from config import ConfigLoader
 from control.channel_download_lock import ChannelDownloadLock
 from storage import Database, create_database
-from utils.logger import set_console_log_level, setup_logger
+from utils.logger import configure_app_logging, set_console_log_level, setup_logger
 
 logger = setup_logger("ChannelScheduler")
 display = ProgressDisplay()
+
+
+def _init_file_logging(config: ConfigLoader) -> None:
+    from pathlib import Path
+
+    log_path = configure_app_logging(config.config, project_root=Path(__file__).resolve().parent.parent)
+    if log_path:
+        display.print_info(f"Logs: {log_path}")
 
 
 def _scheduler_interval_seconds(config: ConfigLoader, args) -> int:
@@ -69,7 +77,10 @@ def resolve_channel_config_overrides(channel: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _apply_channel_sync_config(
-    config: ConfigLoader, channel: Dict[str, Any]
+    config: ConfigLoader,
+    channel: Dict[str, Any],
+    *,
+    daily_remaining: Optional[int] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Any]:
     sync_mode = str(channel.get("sync_mode") or "incremental").strip().lower()
     original_increase = copy.deepcopy(config.get("increase") or {})
@@ -91,11 +102,14 @@ def _apply_channel_sync_config(
             batch_raw = original_number.get("post", 10)
         patched_number["post"] = max(0, int(batch_raw))
 
-    # Precedence: non-null channel DB value > existing global/file config value
-    # > hard-coded application default. ``resolve_channel_config_overrides``
-    # only returns keys the channel explicitly overrides in the DB, so a
-    # missing key here naturally falls through to what ConfigLoader already
-    # resolved from file/env/hard-coded defaults.
+    if daily_remaining is not None:
+        if daily_remaining <= 0:
+            patched_number["post"] = 0
+        elif int(patched_number.get("post") or 0) <= 0:
+            patched_number["post"] = int(daily_remaining)
+        else:
+            patched_number["post"] = min(int(patched_number["post"]), int(daily_remaining))
+
     overrides = resolve_channel_config_overrides(channel)
     patched_download_pinned = overrides.get("download_pinned", original_download_pinned)
     if "number" in overrides:
@@ -160,12 +174,24 @@ async def run_scheduler_tick(
 
     original_increase = original_number = original_download_pinned = None
     try:
+        quota = await database.get_channel_daily_download_quota(channel_id)
+        if quota["limit"] and quota["remaining"] == 0:
+            display.print_info(
+                f"Channel [{channel_id}] {channel_name}: đã đủ daily_video_limit="
+                f"{quota['limit']} hôm nay ({quota['used']}/{quota['limit']}) — bỏ qua"
+            )
+            await database.update_channel_last_sync(channel_id)
+            return False
+
+        daily_remaining = quota["remaining"]
         try:
             (
                 original_increase,
                 original_number,
                 original_download_pinned,
-            ) = _apply_channel_sync_config(config, channel)
+            ) = _apply_channel_sync_config(
+                config, channel, daily_remaining=daily_remaining
+            )
         except ChannelConfigError as exc:
             logger.error(
                 "Scheduler tick: invalid channel config id=%s (%s): %s",
@@ -177,10 +203,29 @@ async def run_scheduler_tick(
             return False
 
         batch_size = int((config.get("number") or {}).get("post") or 0)
+        quota_info = (
+            f"unlimited"
+            if daily_remaining is None
+            else f"{quota['used']}/{quota['limit']} used, remain={daily_remaining}"
+        )
         display.print_info(
             f"Scheduler: syncing channel [{channel_id}] {channel_name} "
-            f"(sync_mode={channel.get('sync_mode')}, download_batch_size={batch_size or 'unlimited'})"
+            f"(sync_mode={channel.get('sync_mode')}, download_batch_size={batch_size or 'unlimited'}, "
+            f"daily_quota={quota_info})"
         )
+        logger.info(
+            "Scheduler tick: downloading channel id=%s name=%s url=%s batch=%s daily_quota=%s",
+            channel_id,
+            channel_name,
+            url,
+            batch_size or "unlimited",
+            quota_info,
+        )
+        if batch_size == 0 and daily_remaining is not None and daily_remaining <= 0:
+            display.print_info(f"Channel [{channel_id}] no remaining daily quota")
+            await database.update_channel_last_sync(channel_id)
+            return False
+
         result = await _run_with_relogin(
             lambda: download_url(
                 url,
@@ -232,6 +277,8 @@ async def run_channel_scheduler(args, config: ConfigLoader) -> None:
     database = create_database(config.config)
     await database.initialize()
     await database.sync_channels_from_urls(config.get_links())
+
+    _init_file_logging(config)
 
     scheduler_cfg = config.get("scheduler") or {}
     quiet_logs = bool((config.get("progress") or {}).get("quiet_logs", True))

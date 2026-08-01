@@ -66,6 +66,14 @@ database_mysql:
 progress:
   quiet_logs: true
 
+logging:
+  enabled: true
+  dir: logs
+  file: douyin-downloader.log
+  level: INFO
+  max_bytes: 20971520
+  backup_count: 10
+
 transcript:
   enabled: false
   model: gpt-4o-mini-transcribe

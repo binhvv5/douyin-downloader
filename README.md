@@ -159,6 +159,7 @@ A desktop GUI built on the same backend — paste a link to start, sync your fol
 | Browser fallback                | Launches browser when pagination is blocked, manual CAPTCHA supported        |
 | Download integrity check        | Content-Length validation, auto-cleanup of incomplete files                  |
 | Progress display                | Rich progress bars, supports `progress.quiet_logs` quiet mode                |
+| File logging                    | Rotating logs under `logs/douyin-downloader.log` with per-video `[step]` lines |
 | Docker deployment               | Dockerfile included                                                          |
 | CI/CD                           | GitHub Actions for testing and linting                                       |
 
@@ -640,7 +641,22 @@ This is a common pagination risk-control behavior. Make sure:
 
 ### 2) Why is the progress output noisy/repeated?
 
-By default, `progress.quiet_logs: true` suppresses logs during progress stage.  
+By default, `progress.quiet_logs: true` suppresses console logs during progress stage.
+Download steps are still written to file (`logging.dir` / `logging.file`, default `logs/douyin-downloader.log`), e.g.:
+
+```text
+[step] process aweme_id=... title=...
+[step] downloading video aweme_id=... -> /path/to/file.mp4
+[step] done aweme_id=... files=3
+```
+
+```yaml
+logging:
+  enabled: true
+  dir: logs
+  file: douyin-downloader.log
+  level: INFO
+```
 Use `--show-warnings` or `-v` temporarily when debugging.
 
 ### 3) What if cookies are expired?

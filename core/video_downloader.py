@@ -18,8 +18,10 @@ class VideoDownloader(BaseDownloader):
         result.total = 1
         self._progress_set_item_total(1, "Single-item download")
         self._progress_update_step("Downloading items", "Downloading single-item resources")
+        logger.info("[step] single video aweme_id=%s", aweme_id)
 
         if not await self._should_download(aweme_id):
+            logger.info("[step] skip already-downloaded aweme_id=%s", aweme_id)
             logger.info("Video %s already downloaded, skipping", aweme_id)
             result.skipped += 1
             self._progress_advance_item("skipped", str(aweme_id))
@@ -27,6 +29,7 @@ class VideoDownloader(BaseDownloader):
 
         await self.rate_limiter.acquire()
 
+        logger.info("[step] fetch detail aweme_id=%s", aweme_id)
         aweme_data = await self.api_client.get_video_detail(aweme_id)
         if not aweme_data:
             logger.error("Failed to get video detail: %s", aweme_id)

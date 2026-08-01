@@ -279,6 +279,11 @@ async def extract_audio(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{video_path.stem}.mp3"
+    logger.info(
+        "[step] ffmpeg extract-audio start in=%s out=%s",
+        video_path.name,
+        output_path.name,
+    )
 
     args = (
         ffmpeg_path,

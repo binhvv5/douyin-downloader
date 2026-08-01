@@ -6,7 +6,10 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 from storage.db_connection import DbConnection, open_mysql, open_sqlite
 from storage.pipeline_handoff import build_asset_entries, find_local_source_mp4
+from utils.logger import setup_logger
 from utils.path_mapping import map_to_path2
+
+logger = setup_logger("Database")
 
 
 def create_database(config: Dict[str, Any]) -> "Database":
@@ -1328,6 +1331,74 @@ class Database:
             "download_pinned": row[8],
             "number_like": row[9],
         }
+
+    async def get_channel_daily_video_limit(self, channel_id: int, *, default: int = 5) -> int:
+        """
+        daily_video_limit từ channel_pipeline_configs.
+        NULL / thiếu row -> default (5).
+        0 -> không giới hạn (trả về 0).
+        """
+        db = await self._get_conn()
+        try:
+            cursor = await db.execute(
+                f"""
+                SELECT daily_video_limit
+                FROM channel_pipeline_configs
+                WHERE channel_id = {self._placeholder()}
+                """,
+                (int(channel_id),),
+            )
+            row = await cursor.fetchone()
+        except Exception:
+            logger.warning(
+                "channel_pipeline_configs unavailable; using default daily_video_limit=%s",
+                default,
+            )
+            return int(default)
+
+        if not row or row[0] is None:
+            return int(default)
+        return max(0, int(row[0]))
+
+    async def count_channel_downloads_today(self, channel_id: int) -> int:
+        """Số aweme download success của channel trong ngày lịch hiện tại (theo DB server time)."""
+        db = await self._get_conn()
+        if self.engine == "mysql":
+            cursor = await db.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM aweme
+                WHERE channel_id = {self._placeholder()}
+                  AND download_status = 'success'
+                  AND download_time IS NOT NULL
+                  AND download_time >= UNIX_TIMESTAMP(CURDATE())
+                  AND download_time < UNIX_TIMESTAMP(CURDATE() + INTERVAL 1 DAY)
+                """,
+                (int(channel_id),),
+            )
+        else:
+            cursor = await db.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM aweme
+                WHERE channel_id = {self._placeholder()}
+                  AND download_status = 'success'
+                  AND download_time IS NOT NULL
+                  AND download_time >= strftime('%s', 'now', 'start of day')
+                  AND download_time < strftime('%s', 'now', 'start of day', '+1 day')
+                """,
+                (int(channel_id),),
+            )
+        row = await cursor.fetchone()
+        return int(row[0] or 0) if row else 0
+
+    async def get_channel_daily_download_quota(self, channel_id: int, *, default_limit: int = 5) -> Dict[str, Any]:
+        limit = await self.get_channel_daily_video_limit(channel_id, default=default_limit)
+        if limit == 0:
+            return {"limit": 0, "used": 0, "remaining": None}
+        used = await self.count_channel_downloads_today(channel_id)
+        remaining = max(0, limit - used)
+        return {"limit": limit, "used": used, "remaining": remaining}
 
     async def mysql_get_lock(self, lock_name: str, timeout_seconds: int) -> bool:
         if self.engine != "mysql":

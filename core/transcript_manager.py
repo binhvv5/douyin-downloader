@@ -1,8 +1,10 @@
 import json
 import os
 import tempfile
+import asyncio
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Dict, List, Optional, Tuple, TypeVar
 
 import aiofiles
 import aiohttp
@@ -10,10 +12,33 @@ import aiohttp
 from config import ConfigLoader
 from core.audio_extraction import AudioExtractError, extract_audio
 from storage import Database, FileManager
+from utils.helpers import format_size
 from utils.logger import setup_logger
 
 logger = setup_logger("TranscriptManager")
 
+T = TypeVar("T")
+
+
+async def _await_with_heartbeat(
+    awaitable: Awaitable[T],
+    *,
+    label: str,
+    interval_seconds: float = 15.0,
+) -> T:
+    task = asyncio.ensure_future(awaitable)
+    started = time.monotonic()
+    while True:
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=interval_seconds)
+        except asyncio.TimeoutError:
+            if task.done():
+                return await task
+            logger.info(
+                "[step] %s still running elapsed=%.0fs (not hung)",
+                label,
+                time.monotonic() - started,
+            )
 
 # File extensions that the transcription endpoint already accepts as audio.
 # When the source download is one of these we skip ``extract_audio`` and
@@ -179,13 +204,26 @@ class TranscriptManager:
 
     async def process_video(self, video_path: Path, aweme_id: str) -> Dict[str, Any]:
         video_path = Path(video_path)
+        started = time.monotonic()
 
         if not self._enabled():
+            logger.info("[step] transcript skipped aweme_id=%s reason=disabled", aweme_id)
             return {"status": "skipped", "reason": "disabled"}
 
         api_key = self._resolve_api_key()
         text_path, json_path = self.build_output_paths(video_path)
         model = self._model()
+        try:
+            video_size = format_size(video_path.stat().st_size) if video_path.exists() else "?"
+        except OSError:
+            video_size = "?"
+        logger.info(
+            "[step] transcript begin aweme_id=%s model=%s file=%s size=%s",
+            aweme_id,
+            model,
+            video_path.name,
+            video_size,
+        )
 
         if not api_key:
             await self._record_job(
@@ -222,9 +260,16 @@ class TranscriptManager:
                 tmp_audio_dir = tempfile.TemporaryDirectory(
                     prefix="transcript_audio_"
                 )
+                logger.info(
+                    "[step] transcript extract-audio start aweme_id=%s (ffmpeg, may take a while)",
+                    aweme_id,
+                )
+                extract_started = time.monotonic()
                 try:
-                    upload_path = await extract_audio(
-                        video_path, Path(tmp_audio_dir.name)
+                    upload_path = await _await_with_heartbeat(
+                        extract_audio(video_path, Path(tmp_audio_dir.name)),
+                        label=f"transcript extract-audio aweme_id={aweme_id}",
+                        interval_seconds=10.0,
                     )
                 except AudioExtractError as exc:
                     error_message = str(exc)
@@ -249,22 +294,51 @@ class TranscriptManager:
                         "reason": "audio_extract_failed",
                         "error": error_message,
                     }
+                try:
+                    audio_size = format_size(upload_path.stat().st_size)
+                except OSError:
+                    audio_size = "?"
+                logger.info(
+                    "[step] transcript extract-audio done aweme_id=%s size=%s elapsed=%.1fs",
+                    aweme_id,
+                    audio_size,
+                    time.monotonic() - extract_started,
+                )
                 upload_filename = f"{video_path.stem}.mp3"
                 upload_content_type = "audio/mpeg"
             elif is_source_audio:
                 upload_filename = video_path.name
                 upload_content_type = _SOURCE_AUDIO_MIME[source_ext]
+                logger.info(
+                    "[step] transcript upload source-audio passthrough aweme_id=%s",
+                    aweme_id,
+                )
 
             try:
-                payload = await self._call_openai_transcription(
-                    api_key=api_key,
-                    file_path=upload_path,
-                    filename=upload_filename,
-                    content_type=upload_content_type,
-                    model=model,
+                logger.info(
+                    "[step] transcript API upload start aweme_id=%s model=%s file=%s",
+                    aweme_id,
+                    model,
+                    upload_filename,
                 )
-                # ``_write_outputs`` re-derives the text from ``payload`` —
-                # no need to pre-extract it here.
+                api_started = time.monotonic()
+                payload = await _await_with_heartbeat(
+                    self._call_openai_transcription(
+                        api_key=api_key,
+                        file_path=upload_path,
+                        filename=upload_filename,
+                        content_type=upload_content_type,
+                        model=model,
+                    ),
+                    label=f"transcript API aweme_id={aweme_id}",
+                    interval_seconds=15.0,
+                )
+                logger.info(
+                    "[step] transcript API upload done aweme_id=%s elapsed=%.1fs",
+                    aweme_id,
+                    time.monotonic() - api_started,
+                )
+                logger.info("[step] transcript write outputs aweme_id=%s", aweme_id)
                 await self._write_outputs(payload, text_path, json_path)
                 await self._record_job(
                     aweme_id=aweme_id,
@@ -276,6 +350,11 @@ class TranscriptManager:
                     status="success",
                     skip_reason=None,
                     error_message=None,
+                )
+                logger.info(
+                    "[step] transcript success aweme_id=%s total_elapsed=%.1fs",
+                    aweme_id,
+                    time.monotonic() - started,
                 )
                 return {
                     "status": "success",
@@ -384,12 +463,27 @@ class TranscriptManager:
                 content_type=content_type,
             )
             timeout = aiohttp.ClientTimeout(total=1800)
+            try:
+                file_size = format_size(file_path.stat().st_size)
+            except OSError:
+                file_size = "?"
+            logger.info(
+                "[step] transcript HTTP POST waiting response url=%s size=%s (can take minutes)",
+                api_url,
+                file_size,
+            )
+            post_started = time.monotonic()
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     api_url,
                     data=form,
                     headers={"Authorization": f"Bearer {api_key}"},
                 ) as response:
+                    logger.info(
+                        "[step] transcript HTTP status=%s elapsed=%.1fs",
+                        response.status,
+                        time.monotonic() - post_started,
+                    )
                     if response.status != 200:
                         body = await response.text()
                         # Some misbehaving proxies echo the bearer token

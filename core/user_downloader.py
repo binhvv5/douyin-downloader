@@ -225,10 +225,25 @@ class UserDownloader(BaseDownloader):
         result.total = len(deduped_items)
         self._progress_set_item_total(result.total, "Items pending download")
         self._progress_update_step("Downloading items", f"{result.total} item(s) pending")
+        logger.info(
+            "[step] mode=%s author=%s queue=%d item(s)",
+            mode,
+            author_name,
+            result.total,
+        )
 
         async def _process_aweme(item: Dict[str, Any]):
             aweme_id = item.get("aweme_id")
+            title = (item.get("desc") or "").strip() or "no_title"
+            title_preview = title if len(title) <= 80 else title[:77] + "..."
+            logger.info(
+                "[step] process aweme_id=%s mode=%s title=%s",
+                aweme_id,
+                mode,
+                title_preview,
+            )
             if not await self._should_download(str(aweme_id or "")):
+                logger.info("[step] skip already-downloaded aweme_id=%s", aweme_id)
                 if self.database and aweme_id:
                     await self.database.handoff_skipped_download(
                         aweme_id=str(aweme_id),
@@ -248,6 +263,7 @@ class UserDownloader(BaseDownloader):
                     channel_id=self.channel_id,
                 )
             status = "success" if success else "failed"
+            logger.info("[step] item finished aweme_id=%s status=%s", aweme_id, status)
             self._progress_advance_item(status, str(aweme_id or "unknown"))
             return {
                 "status": status,
