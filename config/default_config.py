@@ -42,7 +42,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "mix": False,
         "music": False,
     },
-    "thread": 5,
+    "thread": 1,
     "retry_times": 3,
     "rate_limit": 2,
     "proxy": "",
@@ -95,6 +95,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "api_url": "https://api.openai.com/v1/chat/completions",
         "api_key_env": "OPENAI_API_KEY",
         "api_key": "",
+        "html_proxy_url": "http://127.0.0.1:8095/v1/responses",
+        "html_proxy_timeout_seconds": 600,
     },
     "auto_cookie": False,
     "browser_fallback": {

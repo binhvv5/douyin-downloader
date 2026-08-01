@@ -453,13 +453,25 @@ class BaseDownloader(ABC):
 
         author = aweme_data.get("author", {})
         tags = self._extract_tags(aweme_data)
-        translation_cfg = self.config.get("translation", {}) or {}
-        if not isinstance(translation_cfg, dict):
-            translation_cfg = {}
+        translation_cfg = dict(self.config.get("translation", {}) or {})
+        if self.database and self.channel_id is not None:
+            try:
+                use_proxy = await self.database.get_channel_use_chatgpt_html_proxy(
+                    int(self.channel_id)
+                )
+                translation_cfg["use_chatgpt_html_proxy"] = use_proxy
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load use_chatgpt_html_proxy for channel_id=%s: %s",
+                    self.channel_id,
+                    exc,
+                )
         logger.info(
-            "[step] translate metadata aweme_id=%s enabled=%s",
+            "[step] translate metadata aweme_id=%s enabled=%s use_chatgpt_html_proxy=%s channel_id=%s",
             aweme_id,
             bool(translation_cfg.get("enabled")),
+            bool(translation_cfg.get("use_chatgpt_html_proxy")),
+            self.channel_id,
         )
         vi_content, metadata_translate_ok = await resolve_aweme_vi_content(
             desc, tags, translation_cfg

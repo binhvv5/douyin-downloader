@@ -55,6 +55,39 @@ async def test_daily_download_quota_respects_limit(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_get_channel_use_chatgpt_html_proxy(tmp_path):
+    db_path = tmp_path / "proxy_flag.db"
+    database = Database(str(db_path))
+    await database.initialize()
+
+    channel_id = await database.upsert_channel(
+        name="Proxy",
+        douyin_url="https://www.douyin.com/user/proxy",
+        sec_uid="sec_proxy",
+    )
+    db = await database._get_conn()
+    await db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS channel_pipeline_configs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id INTEGER NOT NULL UNIQUE,
+            use_chatgpt_html_proxy INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    await db.execute(
+        "INSERT INTO channel_pipeline_configs (channel_id, use_chatgpt_html_proxy) VALUES (?, ?)",
+        (channel_id, 1),
+    )
+    await db.commit()
+
+    assert await database.get_channel_use_chatgpt_html_proxy(channel_id) is True
+    assert await database.get_channel_use_chatgpt_html_proxy(99999, default=False) is False
+
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_pick_next_channel_prefers_never_synced(tmp_path):
     db_path = tmp_path / "test.db"
     database = Database(str(db_path))

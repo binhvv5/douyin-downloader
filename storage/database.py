@@ -1360,6 +1360,31 @@ class Database:
             return int(default)
         return max(0, int(row[0]))
 
+    async def get_channel_use_chatgpt_html_proxy(
+        self, channel_id: int, *, default: bool = False
+    ) -> bool:
+        db = await self._get_conn()
+        try:
+            cursor = await db.execute(
+                f"""
+                SELECT use_chatgpt_html_proxy
+                FROM channel_pipeline_configs
+                WHERE channel_id = {self._placeholder()}
+                """,
+                (int(channel_id),),
+            )
+            row = await cursor.fetchone()
+        except Exception:
+            logger.warning(
+                "channel_pipeline_configs.use_chatgpt_html_proxy unavailable; default=%s",
+                default,
+            )
+            return bool(default)
+
+        if not row or row[0] is None:
+            return bool(default)
+        return bool(int(row[0]))
+
     async def count_channel_downloads_today(self, channel_id: int) -> int:
         """Số aweme download success của channel trong ngày lịch hiện tại (theo DB server time)."""
         db = await self._get_conn()
