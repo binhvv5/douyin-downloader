@@ -117,6 +117,52 @@ async def test_pipeline_skip_handoff_creates_dub_pending(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_metadata_translate_claim_only_once(tmp_path):
+    db_path = tmp_path / "test.db"
+    database = Database(str(db_path))
+    await database.initialize()
+
+    aweme_id = "1111222233334444555"
+    claimed_a = await database.try_claim_metadata_translate(aweme_id=aweme_id, channel_id=1)
+    claimed_b = await database.try_claim_metadata_translate(aweme_id=aweme_id, channel_id=1)
+    assert claimed_a is True
+    assert claimed_b is False
+    assert (
+        await database.get_pipeline_job_status(aweme_id, "metadata_translate")
+        == "processing"
+    )
+
+    await database.complete_download_handoff(
+        aweme_id=aweme_id,
+        channel_id=1,
+        downloaded_files=[],
+        metadata_translate_ok=None,
+        translation_enabled=True,
+        download_status="success",
+        base_path=tmp_path,
+    )
+    assert (
+        await database.get_pipeline_job_status(aweme_id, "metadata_translate")
+        == "processing"
+    )
+
+    await database.complete_download_handoff(
+        aweme_id=aweme_id,
+        channel_id=1,
+        downloaded_files=[],
+        metadata_translate_ok=True,
+        translation_enabled=True,
+        download_status="success",
+        base_path=tmp_path,
+    )
+    assert (
+        await database.get_pipeline_job_status(aweme_id, "metadata_translate")
+        == "success"
+    )
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_resolve_download_urls_prefers_enabled_channels(tmp_path):
     db_path = tmp_path / "test.db"
     database = Database(str(db_path))

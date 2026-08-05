@@ -1,5 +1,7 @@
+import asyncio
 import json
 import re
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
@@ -9,10 +11,11 @@ from urllib.parse import urlparse
 from auth import CookieManager
 from config import ConfigLoader
 from control import QueueManager, RateLimiter, RetryHandler
+from control.html_proxy_lock import HtmlProxyLock
 from core.api_client import DouyinAPIClient
 from core.metadata import extract_author_sec_uid
 from core.transcript_manager import TranscriptManager
-from core.content_translator import resolve_aweme_vi_content
+from core.content_translator import resolve_aweme_vi_content, use_chatgpt_html_proxy
 from storage import Database, FileManager, MetadataHandler
 from utils.logger import setup_logger
 from utils.naming import (
@@ -473,8 +476,11 @@ class BaseDownloader(ABC):
             bool(translation_cfg.get("use_chatgpt_html_proxy")),
             self.channel_id,
         )
-        vi_content, metadata_translate_ok = await resolve_aweme_vi_content(
-            desc, tags, translation_cfg
+        vi_content, metadata_translate_ok = await self._resolve_metadata_translate(
+            aweme_id=str(aweme_id),
+            desc=desc,
+            tags=tags,
+            translation_cfg=translation_cfg,
         )
         title_vi = vi_content.get("title_vi") or None
         description_vi = vi_content.get("description_vi") or None
@@ -1028,6 +1034,157 @@ class BaseDownloader(ABC):
             return publish_ts, datetime.fromtimestamp(publish_ts).strftime("%Y-%m-%d")
         except (TypeError, ValueError, OSError, OverflowError):
             return None, ""
+
+    async def _resolve_metadata_translate(
+        self,
+        *,
+        aweme_id: str,
+        desc: str,
+        tags: List[str],
+        translation_cfg: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], Optional[bool]]:
+        empty: Dict[str, Any] = {
+            "title_vi": "",
+            "description_vi": "",
+            "tags_vi": [],
+        }
+        if not bool(translation_cfg.get("enabled")):
+            return await resolve_aweme_vi_content(desc, tags, translation_cfg)
+
+        if self.database:
+            existing = await self.database.get_aweme_vi_content(aweme_id)
+            status = await self.database.get_pipeline_job_status(
+                aweme_id, "metadata_translate"
+            )
+            if existing and str(existing.get("title_vi") or "").strip():
+                logger.info(
+                    "[step] translate metadata reuse aweme_id=%s reason=already_have_title_vi",
+                    aweme_id,
+                )
+                return existing, True if status != "processing" else None
+            if status == "success":
+                logger.info(
+                    "[step] translate metadata reuse aweme_id=%s reason=already_success",
+                    aweme_id,
+                )
+                return existing or empty, True
+            if status == "processing":
+                return await self._wait_same_aweme_metadata_translate(
+                    aweme_id=aweme_id,
+                    desc=desc,
+                    tags=tags,
+                    translation_cfg=translation_cfg,
+                    empty=empty,
+                )
+            claimed = await self.database.try_claim_metadata_translate(
+                aweme_id=aweme_id,
+                channel_id=self.channel_id,
+            )
+            if not claimed:
+                return await self._wait_same_aweme_metadata_translate(
+                    aweme_id=aweme_id,
+                    desc=desc,
+                    tags=tags,
+                    translation_cfg=translation_cfg,
+                    empty=empty,
+                )
+
+        return await self._call_metadata_translate(desc, tags, translation_cfg)
+
+    async def _wait_same_aweme_metadata_translate(
+        self,
+        *,
+        aweme_id: str,
+        desc: str,
+        tags: List[str],
+        translation_cfg: Dict[str, Any],
+        empty: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], Optional[bool]]:
+        timeout = float(
+            translation_cfg.get("metadata_wait_timeout_seconds")
+            or translation_cfg.get("html_proxy_timeout_seconds")
+            or 600
+        )
+        interval = float(translation_cfg.get("metadata_wait_interval_seconds") or 2.0)
+        deadline = time.monotonic() + max(1.0, timeout)
+        while time.monotonic() < deadline:
+            existing = await self.database.get_aweme_vi_content(aweme_id)
+            status = await self.database.get_pipeline_job_status(
+                aweme_id, "metadata_translate"
+            )
+            if existing and str(existing.get("title_vi") or "").strip():
+                logger.info(
+                    "[step] translate metadata reuse aweme_id=%s after peer finished",
+                    aweme_id,
+                )
+                return existing, True if status != "processing" else None
+            if status == "success":
+                return existing or empty, True
+            if status != "processing":
+                claimed = await self.database.try_claim_metadata_translate(
+                    aweme_id=aweme_id,
+                    channel_id=self.channel_id,
+                )
+                if claimed:
+                    return await self._call_metadata_translate(
+                        desc, tags, translation_cfg
+                    )
+            logger.info(
+                "[step] translate metadata wait same aweme_id=%s status=%s",
+                aweme_id,
+                status,
+            )
+            await asyncio.sleep(max(0.2, interval))
+        logger.warning(
+            "[step] translate metadata wait timeout aweme_id=%s (same aweme peer)",
+            aweme_id,
+        )
+        existing = await self.database.get_aweme_vi_content(aweme_id)
+        return existing or empty, None
+
+    async def _call_metadata_translate(
+        self,
+        desc: str,
+        tags: List[str],
+        translation_cfg: Dict[str, Any],
+    ) -> Tuple[Dict[str, Any], bool]:
+        if not use_chatgpt_html_proxy(translation_cfg):
+            return await resolve_aweme_vi_content(desc, tags, translation_cfg)
+
+        timeout = int(
+            translation_cfg.get("metadata_wait_timeout_seconds")
+            or translation_cfg.get("html_proxy_timeout_seconds")
+            or 600
+        )
+        lock_dir = Path(
+            self.config.get("path")
+            or getattr(self.file_manager, "base_path", None)
+            or "."
+        )
+        lock = HtmlProxyLock(self.database, lock_dir=lock_dir)
+        holder = f"aweme_meta:{self.channel_id}"
+        acquired = await lock.try_acquire(
+            holder=holder,
+            timeout_seconds=max(1, timeout),
+        )
+        if not acquired:
+            logger.warning(
+                "[step] translate metadata html-proxy lock timeout holder=%s",
+                holder,
+            )
+            empty = {
+                "title_vi": "",
+                "description_vi": "",
+                "tags_vi": [],
+            }
+            return empty, False
+        try:
+            logger.info(
+                "[step] translate metadata html-proxy lock held, calling GPT"
+            )
+            return await resolve_aweme_vi_content(desc, tags, translation_cfg)
+        finally:
+            await lock.release()
 
     @staticmethod
     def _extract_tags(aweme_data: Dict[str, Any]) -> List[str]:

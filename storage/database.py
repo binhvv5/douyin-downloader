@@ -699,12 +699,37 @@ class Database:
                     file_path=VALUES(file_path),
                     file_path2=VALUES(file_path2),
                     metadata=VALUES(metadata),
-                    title_vi=VALUES(title_vi),
-                    description_vi=VALUES(description_vi),
-                    tags_vi=VALUES(tags_vi)
+                    title_vi=IF(VALUES(title_vi) IS NULL OR VALUES(title_vi) = '', title_vi, VALUES(title_vi)),
+                    description_vi=IF(VALUES(description_vi) IS NULL, description_vi, VALUES(description_vi)),
+                    tags_vi=IF(VALUES(tags_vi) IS NULL OR VALUES(tags_vi) = '', tags_vi, VALUES(tags_vi))
             """
         return f"""
-            INSERT OR REPLACE INTO aweme ({cols}) VALUES ({values})
+            INSERT INTO aweme ({cols}) VALUES ({values})
+            ON CONFLICT(aweme_id) DO UPDATE SET
+                aweme_type=excluded.aweme_type,
+                channel_id=excluded.channel_id,
+                title=excluded.title,
+                author_id=excluded.author_id,
+                author_name=excluded.author_name,
+                author_sec_uid=excluded.author_sec_uid,
+                create_time=excluded.create_time,
+                download_time=excluded.download_time,
+                download_status=excluded.download_status,
+                file_path=excluded.file_path,
+                file_path2=excluded.file_path2,
+                metadata=excluded.metadata,
+                title_vi=CASE
+                    WHEN excluded.title_vi IS NULL OR excluded.title_vi = '' THEN aweme.title_vi
+                    ELSE excluded.title_vi
+                END,
+                description_vi=CASE
+                    WHEN excluded.description_vi IS NULL THEN aweme.description_vi
+                    ELSE excluded.description_vi
+                END,
+                tags_vi=CASE
+                    WHEN excluded.tags_vi IS NULL OR excluded.tags_vi = '' THEN aweme.tags_vi
+                    ELSE excluded.tags_vi
+                END
         """
 
     def _aweme_row_values(self, aweme_data: Dict[str, Any], *, download_time: Optional[int] = None) -> tuple:
@@ -1509,6 +1534,92 @@ class Database:
         row = await cursor.fetchone()
         return row[0] if row else None
 
+    async def get_aweme_vi_content(self, aweme_id: str) -> Optional[Dict[str, Any]]:
+        db = await self._get_conn()
+        cursor = await db.execute(
+            f"""
+            SELECT title_vi, description_vi, tags_vi
+            FROM aweme
+            WHERE aweme_id = {self._placeholder()}
+            """,
+            (aweme_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        tags_raw = row[2]
+        tags_vi: List[str] = []
+        if isinstance(tags_raw, str) and tags_raw.strip():
+            try:
+                parsed = json.loads(tags_raw)
+                if isinstance(parsed, list):
+                    tags_vi = [str(x).strip() for x in parsed if str(x).strip()]
+            except Exception:
+                tags_vi = []
+        elif isinstance(tags_raw, list):
+            tags_vi = [str(x).strip() for x in tags_raw if str(x).strip()]
+        return {
+            "title_vi": str(row[0] or "").strip(),
+            "description_vi": str(row[1] or "").strip(),
+            "tags_vi": tags_vi,
+        }
+
+    async def try_claim_metadata_translate(
+        self,
+        *,
+        aweme_id: str,
+        channel_id: Optional[int] = None,
+    ) -> bool:
+        db = await self._get_conn()
+        now = datetime.now().isoformat(sep=" ", timespec="seconds")
+        if self.engine == "mysql":
+            await db.execute(
+                f"""
+                INSERT INTO pipeline_jobs (aweme_id, channel_id, stage, status)
+                VALUES ({self._placeholder(4)})
+                ON DUPLICATE KEY UPDATE aweme_id = aweme_id
+                """,
+                (aweme_id, channel_id, "metadata_translate", "pending"),
+            )
+            cursor = await db.execute(
+                f"""
+                UPDATE pipeline_jobs
+                SET status = 'processing',
+                    channel_id = COALESCE({self._placeholder()}, channel_id),
+                    error_message = NULL,
+                    started_at = NOW(),
+                    finished_at = NULL
+                WHERE aweme_id = {self._placeholder()}
+                  AND stage = 'metadata_translate'
+                  AND status NOT IN ('processing', 'success')
+                """,
+                (channel_id, aweme_id),
+            )
+        else:
+            await db.execute(
+                f"""
+                INSERT OR IGNORE INTO pipeline_jobs (aweme_id, channel_id, stage, status)
+                VALUES ({self._placeholder(4)})
+                """,
+                (aweme_id, channel_id, "metadata_translate", "pending"),
+            )
+            cursor = await db.execute(
+                f"""
+                UPDATE pipeline_jobs
+                SET status = 'processing',
+                    channel_id = COALESCE({self._placeholder()}, channel_id),
+                    error_message = NULL,
+                    started_at = {self._placeholder()},
+                    finished_at = NULL
+                WHERE aweme_id = {self._placeholder()}
+                  AND stage = 'metadata_translate'
+                  AND status NOT IN ('processing', 'success')
+                """,
+                (channel_id, now, aweme_id),
+            )
+        await db.commit()
+        return int(getattr(cursor, "rowcount", 0) or 0) > 0
+
     async def upsert_pipeline_job(
         self,
         *,
@@ -1596,7 +1707,7 @@ class Database:
         aweme_id: str,
         channel_id: Optional[int],
         downloaded_files: Sequence[Union[Path, str]],
-        metadata_translate_ok: bool,
+        metadata_translate_ok: Optional[bool],
         translation_enabled: bool,
         download_status: str = "success",
         commit: bool = True,
@@ -1617,17 +1728,26 @@ class Database:
             channel_id=channel_id,
         )
         if not translation_enabled:
-            translate_status = "skipped"
-        elif metadata_translate_ok:
-            translate_status = "success"
-        else:
-            translate_status = "failed"
-        await self.upsert_pipeline_job(
-            aweme_id=aweme_id,
-            stage="metadata_translate",
-            status=translate_status,
-            channel_id=channel_id,
-        )
+            await self.upsert_pipeline_job(
+                aweme_id=aweme_id,
+                stage="metadata_translate",
+                status="skipped",
+                channel_id=channel_id,
+            )
+        elif metadata_translate_ok is True:
+            await self.upsert_pipeline_job(
+                aweme_id=aweme_id,
+                stage="metadata_translate",
+                status="success",
+                channel_id=channel_id,
+            )
+        elif metadata_translate_ok is False:
+            await self.upsert_pipeline_job(
+                aweme_id=aweme_id,
+                stage="metadata_translate",
+                status="failed",
+                channel_id=channel_id,
+            )
         await self.ensure_dub_pending_if_missing(aweme_id=aweme_id, channel_id=channel_id)
         if commit:
             await db.commit()
