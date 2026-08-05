@@ -202,6 +202,7 @@ async def test_translate_via_chatgpt_html_proxy_responses(monkeypatch):
     assert result["title_vi"] == "Tiêu đề proxy"
     assert result["tags_vi"] == ["robot"]
     assert captured["url"] == "http://127.0.0.1:8095/v1/responses"
+    assert captured["headers"]["X-ChatGPT-Profile"] == "title"
     assert "messages" not in captured["json"]
     assert captured["json"]["instructions"] == HTML_PROXY_SYSTEM_PROMPT
     assert "SUGGEST" in captured["json"]["instructions"]

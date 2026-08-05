@@ -13,7 +13,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
-console = Console()
+console = Console(legacy_windows=False, force_terminal=False)
 
 
 class ProgressDisplay:

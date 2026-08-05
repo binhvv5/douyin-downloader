@@ -13,6 +13,8 @@ DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_API_KEY_ENV = "OPENAI_API_KEY"
 DEFAULT_HTML_PROXY_URL = "http://127.0.0.1:8095/v1/responses"
 DEFAULT_HTML_PROXY_TIMEOUT_SECONDS = 600
+HTML_PROXY_PROFILE_HEADER = "X-ChatGPT-Profile"
+DEFAULT_HTML_PROXY_PROFILE = "title"
 
 SYSTEM_PROMPT = (
     "You translate Douyin video metadata from Chinese to natural Vietnamese for "
@@ -220,13 +222,20 @@ async def _translate_via_html_proxy(
         "input": build_html_proxy_input(desc, tags),
     }
     headers = {"Content-Type": "application/json"}
+    profile = str(
+        translation_cfg.get("html_proxy_profile")
+        or translation_cfg.get("chatgpt_html_proxy_profile")
+        or DEFAULT_HTML_PROXY_PROFILE
+    ).strip() or DEFAULT_HTML_PROXY_PROFILE
+    headers[HTML_PROXY_PROFILE_HEADER] = profile
     api_key, _ = resolve_translation_api_key(translation_cfg)
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
     logger.info(
-        "Metadata via chatgpt-html-proxy (title/desc + suggest hashtags) url=%s model=%s timeout=%ss",
+        "Metadata via chatgpt-html-proxy (title/desc + suggest hashtags) url=%s profile=%s model=%s timeout=%ss",
         api_url,
+        profile,
         model,
         timeout_seconds,
     )
