@@ -16,6 +16,7 @@ from core.api_client import DouyinAPIClient
 from core.metadata import extract_author_sec_uid
 from core.transcript_manager import TranscriptManager
 from core.content_translator import resolve_aweme_vi_content, use_chatgpt_html_proxy
+from core.movie_metadata_context import extract_movie_context
 from storage import Database, FileManager, MetadataHandler
 from utils.logger import setup_logger
 from utils.naming import (
@@ -469,11 +470,40 @@ class BaseDownloader(ABC):
                     self.channel_id,
                     exc,
                 )
+            try:
+                target_language = await self.database.get_channel_target_language(
+                    int(self.channel_id)
+                )
+                translation_cfg["target_language"] = target_language
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load target_language for channel_id=%s: %s",
+                    self.channel_id,
+                    exc,
+                )
+            try:
+                movie_topic = await self.database.get_channel_movie_topic(
+                    int(self.channel_id)
+                )
+                translation_cfg["movie_topic"] = movie_topic
+                if movie_topic:
+                    translation_cfg["movie_context"] = extract_movie_context(
+                        aweme_data
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load movie_topic for channel_id=%s: %s",
+                    self.channel_id,
+                    exc,
+                )
         logger.info(
-            "[step] translate metadata aweme_id=%s enabled=%s use_chatgpt_html_proxy=%s channel_id=%s",
+            "[step] translate metadata aweme_id=%s enabled=%s use_chatgpt_html_proxy=%s "
+            "target_language=%s movie_topic=%s channel_id=%s",
             aweme_id,
             bool(translation_cfg.get("enabled")),
             bool(translation_cfg.get("use_chatgpt_html_proxy")),
+            translation_cfg.get("target_language", "vi"),
+            bool(translation_cfg.get("movie_topic")),
             self.channel_id,
         )
         vi_content, metadata_translate_ok = await self._resolve_metadata_translate(

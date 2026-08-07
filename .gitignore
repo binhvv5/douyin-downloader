@@ -44,9 +44,18 @@ dy_downloader.db
 # Local config/secrets
 config*.yml
 !config.example.yml
+.config.yml*
+.config.yml.swp
+*.swp
+*.swo
+*~
 .cookies.json
 config/cookies.json
 .omx/
+
+# Runtime pid
+*.pid
+douyin-downloader.pid
 
 # Editor / IDE local settings
 .claude/

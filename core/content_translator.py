@@ -16,7 +16,7 @@ DEFAULT_HTML_PROXY_TIMEOUT_SECONDS = 600
 HTML_PROXY_PROFILE_HEADER = "X-ChatGPT-Profile"
 DEFAULT_HTML_PROXY_PROFILE = "title"
 
-SYSTEM_PROMPT = (
+SYSTEM_PROMPT_VI = (
     "You translate Douyin video metadata from Chinese to natural Vietnamese for "
     "Facebook/YouTube uploads. Return strict JSON only with keys: "
     "title_vi (short catchy title, no hashtags), "
@@ -25,7 +25,19 @@ SYSTEM_PROMPT = (
     "Keep brand names and proper nouns when appropriate."
 )
 
-HTML_PROXY_SYSTEM_PROMPT = (
+SYSTEM_PROMPT_EN = (
+    "You translate Douyin video metadata from Chinese to natural English for "
+    "Facebook/YouTube uploads. Return strict JSON only with keys: "
+    "title_vi (short catchy English title, no hashtags), "
+    "description_vi (full English caption/body, no hashtags), "
+    "tags_vi (array of English hashtag strings without # prefix). "
+    "Keep brand names and proper nouns when appropriate. "
+    "Field names stay title_vi/description_vi/tags_vi even though content is English."
+)
+
+SYSTEM_PROMPT = SYSTEM_PROMPT_VI
+
+HTML_PROXY_SYSTEM_PROMPT_VI = (
     "You prepare Vietnamese Facebook/YouTube metadata from a Chinese Douyin video.\n"
     "Return VALID JSON only. No Markdown, no code fences, no explanation.\n"
     "\n"
@@ -46,6 +58,149 @@ HTML_PROXY_SYSTEM_PROMPT = (
     "- No Chinese characters in title_vi, description_vi, or tags_vi.\n"
     "- Do not invent facts not implied by the source context."
 )
+
+HTML_PROXY_SYSTEM_PROMPT_EN = (
+    "You prepare English Facebook/YouTube metadata from a Chinese Douyin video.\n"
+    "Return VALID JSON only. No Markdown, no code fences, no explanation.\n"
+    "\n"
+    "Output object keys (exact):\n"
+    "{\n"
+    '  "title_vi": "string",\n'
+    '  "description_vi": "string",\n'
+    '  "tags_vi": ["string", "..."]\n'
+    "}\n"
+    "\n"
+    "Rules:\n"
+    "- title_vi: short catchy natural English title; no hashtags; not literal translation.\n"
+    "- description_vi: natural English caption/body; no hashtags.\n"
+    "- tags_vi: SUGGEST 5-8 English discovery hashtags based on the video topic "
+    "(strings WITHOUT #, no spaces inside each tag). "
+    "Do NOT translate Chinese source_tags one-by-one. "
+    "source_tags are optional context only — invent relevant English tags.\n"
+    "- No Chinese characters in title_vi, description_vi, or tags_vi.\n"
+    "- Field names stay title_vi/description_vi/tags_vi even though content is English.\n"
+    "- Do not invent facts not implied by the source context."
+)
+
+HTML_PROXY_SYSTEM_PROMPT = HTML_PROXY_SYSTEM_PROMPT_VI
+
+HTML_PROXY_SYSTEM_PROMPT_MOVIE_VI = (
+    "You prepare Vietnamese Facebook/YouTube metadata for a MOVIE-topic Douyin video.\n"
+    "Return VALID JSON only. No Markdown, no code fences, no explanation.\n"
+    "\n"
+    "Output object keys (exact):\n"
+    "{\n"
+    '  "title_vi": "string",\n'
+    '  "description_vi": "string",\n'
+    '  "tags_vi": ["string", "..."]\n'
+    "}\n"
+    "\n"
+    "Rules:\n"
+    "- Use movie_context (from Douyin *_data.json) as primary evidence for film names, "
+    "directors, actors, and related keywords. Prefer suggest_words, hashtags, "
+    "recommend_chapter_info, and desc over inventing names.\n"
+    "- title_vi: short catchy Vietnamese title that MUST include the main film name "
+    "(or main film names if the video covers several). No hashtags.\n"
+    "- description_vi: natural Vietnamese caption/body with NO hashtags. MUST include "
+    "a clear sentence in this spirit: "
+    "'Phim này do đạo diễn …, diễn viên trong phim gồm …' "
+    "(use real director/cast from context when available; if unknown, write only what "
+    "is supported and do not invent).\n"
+    "- tags_vi: 6-10 Vietnamese discovery hashtags WITHOUT #. MUST include the film "
+    "name(s) and actor names when known, plus related movie keywords. "
+    "Do NOT merely translate Chinese source_tags one-by-one.\n"
+    "- No Chinese characters in title_vi, description_vi, or tags_vi.\n"
+    "- Do not invent facts not implied by movie_context / desc."
+)
+
+HTML_PROXY_SYSTEM_PROMPT_MOVIE_EN = (
+    "You prepare English Facebook/YouTube metadata for a MOVIE-topic Douyin video.\n"
+    "Return VALID JSON only. No Markdown, no code fences, no explanation.\n"
+    "\n"
+    "Output object keys (exact):\n"
+    "{\n"
+    '  "title_vi": "string",\n'
+    '  "description_vi": "string",\n'
+    '  "tags_vi": ["string", "..."]\n'
+    "}\n"
+    "\n"
+    "Rules:\n"
+    "- Use movie_context (from Douyin *_data.json) as primary evidence for film names, "
+    "directors, actors, and related keywords. Prefer suggest_words, hashtags, "
+    "recommend_chapter_info, and desc over inventing names.\n"
+    "- title_vi: short catchy English title that MUST include the main film name "
+    "(or main film names if the video covers several). No hashtags.\n"
+    "- description_vi: natural English caption/body with NO hashtags. MUST include "
+    "a clear sentence in this spirit: "
+    "'This film is directed by …, starring …' "
+    "(use real director/cast from context when available; if unknown, write only what "
+    "is supported and do not invent).\n"
+    "- tags_vi: 6-10 English discovery hashtags WITHOUT #. MUST include the film "
+    "name(s) and actor names when known, plus related movie keywords. "
+    "Do NOT merely translate Chinese source_tags one-by-one.\n"
+    "- No Chinese characters in title_vi, description_vi, or tags_vi.\n"
+    "- Field names stay title_vi/description_vi/tags_vi even though content is English.\n"
+    "- Do not invent facts not implied by movie_context / desc."
+)
+
+SYSTEM_PROMPT_MOVIE_VI = (
+    "You translate Douyin MOVIE-topic video metadata from Chinese to natural Vietnamese "
+    "for Facebook/YouTube uploads. Return strict JSON only with keys: "
+    "title_vi (must include film name(s), no hashtags), "
+    "description_vi (must mention director and cast in the style "
+    "'Phim này do đạo diễn …, diễn viên trong phim gồm …', no hashtags), "
+    "tags_vi (array of Vietnamese hashtag strings without #; must include film name(s) "
+    "and actor names when known). Use movie_context when provided. "
+    "Do not invent unsupported cast/director facts."
+)
+
+SYSTEM_PROMPT_MOVIE_EN = (
+    "You translate Douyin MOVIE-topic video metadata from Chinese to natural English "
+    "for Facebook/YouTube uploads. Return strict JSON only with keys: "
+    "title_vi (must include film name(s), no hashtags), "
+    "description_vi (must mention director and cast in the style "
+    "'This film is directed by …, starring …', no hashtags), "
+    "tags_vi (array of English hashtag strings without #; must include film name(s) "
+    "and actor names when known). Use movie_context when provided. "
+    "Field names stay title_vi/description_vi/tags_vi even though content is English. "
+    "Do not invent unsupported cast/director facts."
+)
+
+
+def normalize_target_language(translation_cfg: Optional[Dict[str, Any]] = None) -> str:
+    raw = ""
+    if isinstance(translation_cfg, dict):
+        raw = str(
+            translation_cfg.get("target_language")
+            or translation_cfg.get("language")
+            or ""
+        ).strip()
+    text = raw.lower()
+    if text in {"en", "eng", "english"}:
+        return "en"
+    return "vi"
+
+
+def _system_prompt_for(language: str, *, movie_topic: bool = False) -> str:
+    if movie_topic:
+        return SYSTEM_PROMPT_MOVIE_EN if language == "en" else SYSTEM_PROMPT_MOVIE_VI
+    return SYSTEM_PROMPT_EN if language == "en" else SYSTEM_PROMPT_VI
+
+
+def _html_proxy_system_prompt_for(language: str, *, movie_topic: bool = False) -> str:
+    if movie_topic:
+        return (
+            HTML_PROXY_SYSTEM_PROMPT_MOVIE_EN
+            if language == "en"
+            else HTML_PROXY_SYSTEM_PROMPT_MOVIE_VI
+        )
+    return HTML_PROXY_SYSTEM_PROMPT_EN if language == "en" else HTML_PROXY_SYSTEM_PROMPT_VI
+
+
+def is_movie_topic(translation_cfg: Optional[Dict[str, Any]] = None) -> bool:
+    if not isinstance(translation_cfg, dict):
+        return False
+    return _is_truthy(translation_cfg.get("movie_topic"))
 
 
 def resolve_translation_api_key(translation_cfg: Dict[str, Any]) -> Tuple[str, str]:
@@ -135,16 +290,32 @@ def extract_responses_output_text(data: Dict[str, Any]) -> str:
     return ""
 
 
-def build_html_proxy_input(desc: str, tags: List[str]) -> str:
-    context = {
+def build_html_proxy_input(
+    desc: str,
+    tags: List[str],
+    *,
+    language: str = "vi",
+    movie_context: Optional[Dict[str, Any]] = None,
+    movie_topic: bool = False,
+) -> str:
+    context: Dict[str, Any] = {
         "desc": desc or "",
         "source_tags": tags or [],
     }
+    if movie_topic and isinstance(movie_context, dict) and movie_context:
+        context["movie_context"] = movie_context
+    lang_label = "English" if language == "en" else "Vietnamese"
+    extra = ""
+    if movie_topic:
+        extra = (
+            " This is a movie-topic video: title must include film name(s); "
+            "description must mention director/cast; tags must include film and actor names."
+        )
     return (
         "Source context JSON:\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2)}\n\n"
-        "Generate title_vi, description_vi, and SUGGEST tags_vi (Vietnamese hashtags) "
-        "as described in your instructions. Return JSON only."
+        f"Generate title_vi, description_vi, and SUGGEST tags_vi ({lang_label} hashtags) "
+        f"as described in your instructions.{extra} Return JSON only."
     )
 
 
@@ -161,15 +332,25 @@ async def _translate_via_openai_chat(
         )
         return None
 
+    language = normalize_target_language(translation_cfg)
+    movie_topic = is_movie_topic(translation_cfg)
+    movie_context = translation_cfg.get("movie_context")
+    if not isinstance(movie_context, dict):
+        movie_context = None
     model = str(translation_cfg.get("model", DEFAULT_MODEL) or DEFAULT_MODEL)
     api_url = str(translation_cfg.get("api_url", DEFAULT_API_URL) or DEFAULT_API_URL)
-    payload = {"desc": desc or "", "tags": tags or []}
+    payload: Dict[str, Any] = {"desc": desc or "", "tags": tags or []}
+    if movie_topic and movie_context:
+        payload["movie_context"] = movie_context
     request_body = {
         "model": model,
         "temperature": 0.2,
         "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": _system_prompt_for(language, movie_topic=movie_topic),
+            },
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ],
     }
@@ -215,11 +396,25 @@ async def _translate_via_html_proxy(
     except (TypeError, ValueError):
         timeout_seconds = DEFAULT_HTML_PROXY_TIMEOUT_SECONDS
 
+    language = normalize_target_language(translation_cfg)
+    movie_topic = is_movie_topic(translation_cfg)
+    movie_context = translation_cfg.get("movie_context")
+    if not isinstance(movie_context, dict):
+        movie_context = None
     request_body = {
         "model": model,
         "temperature": 0.4,
-        "instructions": HTML_PROXY_SYSTEM_PROMPT,
-        "input": build_html_proxy_input(desc, tags),
+        "language": language,
+        "instructions": _html_proxy_system_prompt_for(
+            language, movie_topic=movie_topic
+        ),
+        "input": build_html_proxy_input(
+            desc,
+            tags,
+            language=language,
+            movie_context=movie_context,
+            movie_topic=movie_topic,
+        ),
     }
     headers = {"Content-Type": "application/json"}
     profile = str(
@@ -233,10 +428,13 @@ async def _translate_via_html_proxy(
         headers["Authorization"] = f"Bearer {api_key}"
 
     logger.info(
-        "Metadata via chatgpt-html-proxy (title/desc + suggest hashtags) url=%s profile=%s model=%s timeout=%ss",
+        "Metadata via chatgpt-html-proxy (title/desc + suggest hashtags) "
+        "url=%s profile=%s model=%s language=%s movie_topic=%s timeout=%ss",
         api_url,
         profile,
         model,
+        language,
+        movie_topic,
         timeout_seconds,
     )
 

@@ -205,6 +205,7 @@ async def test_translate_via_chatgpt_html_proxy_responses(monkeypatch):
     assert captured["headers"]["X-ChatGPT-Profile"] == "title"
     assert "messages" not in captured["json"]
     assert captured["json"]["instructions"] == HTML_PROXY_SYSTEM_PROMPT
+    assert captured["json"]["language"] == "vi"
     assert "SUGGEST" in captured["json"]["instructions"]
     assert "Do NOT translate Chinese source_tags" in captured["json"]["instructions"]
     assert "source_tags" in captured["json"]["input"]

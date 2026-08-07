@@ -1410,6 +1410,59 @@ class Database:
             return bool(default)
         return bool(int(row[0]))
 
+    async def get_channel_target_language(
+        self, channel_id: int, *, default: str = "vi"
+    ) -> str:
+        db = await self._get_conn()
+        try:
+            cursor = await db.execute(
+                f"""
+                SELECT target_language
+                FROM channel_pipeline_configs
+                WHERE channel_id = {self._placeholder()}
+                """,
+                (int(channel_id),),
+            )
+            row = await cursor.fetchone()
+        except Exception:
+            logger.warning(
+                "channel_pipeline_configs.target_language unavailable; default=%s",
+                default,
+            )
+            return "en" if str(default).strip().lower() in {"en", "eng", "english"} else "vi"
+
+        if not row or row[0] is None:
+            return "en" if str(default).strip().lower() in {"en", "eng", "english"} else "vi"
+        text = str(row[0]).strip().lower()
+        if text in {"en", "eng", "english"}:
+            return "en"
+        return "vi"
+
+    async def get_channel_movie_topic(
+        self, channel_id: int, *, default: bool = False
+    ) -> bool:
+        db = await self._get_conn()
+        try:
+            cursor = await db.execute(
+                f"""
+                SELECT movie_topic
+                FROM channel_pipeline_configs
+                WHERE channel_id = {self._placeholder()}
+                """,
+                (int(channel_id),),
+            )
+            row = await cursor.fetchone()
+        except Exception:
+            logger.warning(
+                "channel_pipeline_configs.movie_topic unavailable; default=%s",
+                default,
+            )
+            return bool(default)
+
+        if not row or row[0] is None:
+            return bool(default)
+        return bool(int(row[0]))
+
     async def count_channel_downloads_today(self, channel_id: int) -> int:
         """Số aweme download success của channel trong ngày lịch hiện tại (theo DB server time)."""
         db = await self._get_conn()
