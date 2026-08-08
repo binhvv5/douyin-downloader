@@ -56,7 +56,8 @@ HTML_PROXY_SYSTEM_PROMPT_VI = (
     "Do NOT translate Chinese source_tags one-by-one. "
     "source_tags are optional context only — invent relevant Vietnamese tags.\n"
     "- No Chinese characters in title_vi, description_vi, or tags_vi.\n"
-    "- Do not invent facts not implied by the source context."
+    "- Do not invent facts not implied by the source context.\n"
+    "- JSON must be strictly valid: escape any double quotes inside string values as \\\"."
 )
 
 HTML_PROXY_SYSTEM_PROMPT_EN = (
@@ -79,7 +80,8 @@ HTML_PROXY_SYSTEM_PROMPT_EN = (
     "source_tags are optional context only — invent relevant English tags.\n"
     "- No Chinese characters in title_vi, description_vi, or tags_vi.\n"
     "- Field names stay title_vi/description_vi/tags_vi even though content is English.\n"
-    "- Do not invent facts not implied by the source context."
+    "- Do not invent facts not implied by the source context.\n"
+    "- JSON must be strictly valid: escape any double quotes inside string values as \\\"."
 )
 
 HTML_PROXY_SYSTEM_PROMPT = HTML_PROXY_SYSTEM_PROMPT_VI
@@ -110,7 +112,8 @@ HTML_PROXY_SYSTEM_PROMPT_MOVIE_VI = (
     "name(s) and actor names when known, plus related movie keywords. "
     "Do NOT merely translate Chinese source_tags one-by-one.\n"
     "- No Chinese characters in title_vi, description_vi, or tags_vi.\n"
-    "- Do not invent facts not implied by movie_context / desc."
+    "- Do not invent facts not implied by movie_context / desc.\n"
+    "- JSON must be strictly valid: escape any double quotes inside string values as \\\"."
 )
 
 HTML_PROXY_SYSTEM_PROMPT_MOVIE_EN = (
@@ -140,7 +143,8 @@ HTML_PROXY_SYSTEM_PROMPT_MOVIE_EN = (
     "Do NOT merely translate Chinese source_tags one-by-one.\n"
     "- No Chinese characters in title_vi, description_vi, or tags_vi.\n"
     "- Field names stay title_vi/description_vi/tags_vi even though content is English.\n"
-    "- Do not invent facts not implied by movie_context / desc."
+    "- Do not invent facts not implied by movie_context / desc.\n"
+    "- JSON must be strictly valid: escape any double quotes inside string values as \\\"."
 )
 
 SYSTEM_PROMPT_MOVIE_VI = (
@@ -254,11 +258,73 @@ def _normalize_tags(raw_tags: Any) -> List[str]:
     return tags
 
 
+def _repair_unescaped_quotes_in_json_strings(text: str) -> str:
+    if not text:
+        return text
+    out: List[str] = []
+    in_string = False
+    escaped = False
+    i = 0
+    length = len(text)
+    while i < length:
+        ch = text[i]
+        if escaped:
+            out.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if ch == "\\" and in_string:
+            out.append(ch)
+            escaped = True
+            i += 1
+            continue
+        if ch == '"':
+            if not in_string:
+                in_string = True
+                out.append(ch)
+                i += 1
+                continue
+            j = i + 1
+            while j < length and text[j] in " \n\r\t":
+                j += 1
+            if j >= length or text[j] in ",}]:":
+                in_string = False
+                out.append(ch)
+            else:
+                out.append('\\"')
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _loads_json_lenient(content: str) -> Any:
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        repaired = _repair_unescaped_quotes_in_json_strings(content)
+        return json.loads(repaired)
+
+
 def _parse_vi_payload(content: str) -> Optional[Dict[str, Any]]:
-    parsed = json.loads(content)
-    if isinstance(parsed, str):
-        parsed = json.loads(parsed)
+    try:
+        parsed = _loads_json_lenient(content)
+        if isinstance(parsed, str):
+            parsed = _loads_json_lenient(parsed)
+    except Exception as exc:
+        logger.warning(
+            "Failed to parse metadata JSON (%s). Preview: %s",
+            exc,
+            (content or "")[:300],
+        )
+        return None
     if not isinstance(parsed, dict):
+        logger.warning(
+            "Metadata JSON is not an object (got %s). Preview: %s",
+            type(parsed).__name__,
+            (content or "")[:300],
+        )
         return None
     title_vi = str(parsed.get("title_vi") or "").strip()
     description_vi = str(parsed.get("description_vi") or title_vi or "").strip()
